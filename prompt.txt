@@ -1,0 +1,13 @@
+lets create http certificates handler/storage/manager/controller/deployer in rust
+its git home will be /home/walley/git/certik so its name is certik           
+
+it will be able to run locally but also as a server so https api. 
+
+it will havve TUI interface, there is rust turbo vision clone, turbo-vision on crates.io,
+so lets start with that. turbo-vision v1.3.1 by Paperinik.
+
+create basic ui with top menu (File,edit,help) and add subsystem needed for serving api over https,  
+add endpoint ping, that will response with pong as a test. first function will be load certificate and
+keys decode it and show it in text form in a window. For loading classic file loading dialog should be used.
+                                                        
+                                                                      
