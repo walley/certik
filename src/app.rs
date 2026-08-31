@@ -31,9 +31,9 @@ use turbo_vision::views::file_dialog::FileDialog;
 use turbo_vision::views::menu_bar::{MenuBar, SubMenu};
 use turbo_vision::views::status_line::{StatusItem, StatusLine};
 use turbo_vision::views::scrollbar::ScrollBar;
-use turbo_vision::views::text_viewer::TextViewer;
+use turbo_vision::views::text_viewer::{TextViewer, TextViewerBuilder};
 use turbo_vision::views::view::{write_line_to_terminal, View};
-use turbo_vision::views::window::Window;
+use turbo_vision::views::window::{Window, WindowBuilder};
 
 use crate::api::SharedLog;
 use crate::api;
@@ -371,7 +371,6 @@ fn add_server_window(ui: &mut Ui, bounds: Rect) {
     add_managed_window(ui, window, WinKey::Server);
 }
 
-/// Open a scrollable read-only text window (used for static info).
 fn open_text_window(ui: &mut Ui, title: &str, text: &str, cascade: i16) {
     let (w, h) = ui.app.terminal.size();
     let win_w = (w - 8).max(30);
@@ -379,8 +378,15 @@ fn open_text_window(ui: &mut Ui, title: &str, text: &str, cascade: i16) {
     let x = ((w - win_w) / 2 + cascade * 2).clamp(0, (w - win_w).max(0));
     let y = ((h - win_h) / 2 + cascade * 2).clamp(0, (h - win_h - 1).max(0));
 
-    let mut window = Window::new(Rect::new(x, y, x + win_w, y + win_h), title);
-    let mut viewer = GrowingTextViewer::new(Rect::new(0, 0, win_w - 2, win_h - 2));
+    let mut window = WindowBuilder::new()
+        .bounds(Rect::new(x, y, x + win_w, y + win_h))
+        .title(title)
+        .build();
+
+    let viewer = TextViewerBuilder::new()
+        .bounds(Rect::new(0, 0, win_w - 2, win_h - 2))
+        .build();
+    let mut viewer = GrowingTextViewer::wrap(viewer);
     viewer.set_text(text);
     window.add(Box::new(viewer));
     add_managed_window(ui, window, WinKey::next_aux());
@@ -711,9 +717,9 @@ struct GrowingTextViewer {
 }
 
 impl GrowingTextViewer {
-    fn new(bounds: Rect) -> Self {
+    fn wrap(viewer: TextViewer) -> Self {
         Self {
-            viewer: TextViewer::new(bounds),
+            viewer,
             grow_mode: GF_GROW_HI_X | GF_GROW_HI_Y,
         }
     }
@@ -1279,32 +1285,3 @@ fn scroll_handler(event: &mut Event, offset: &mut usize) {
     }
 }
 
-#[cfg(test)]
-mod growcheck_tmp {
-    use super::*;
-    use turbo_vision::views::desktop::Desktop;
-
-    #[test]
-    fn does_plain_textviewer_resize_with_window() {
-        let mut desktop = Desktop::new(Rect::new(0, 0, 120, 40));
-        let mut window = turbo_vision::views::window::WindowBuilder::new()
-            .bounds(Rect::new(10, 5, 70, 20))
-            .title("Custom Window")
-            .build();
-        let mut viewer = turbo_vision::views::text_viewer::TextViewerBuilder::new()
-            .bounds(Rect::new(0, 0, 58, 13))
-            .build();
-        viewer.set_text("hello");
-        window.add(Box::new(viewer));
-        desktop.add(Box::new(window));
-
-        let win_before = desktop.child_at(0).as_any().downcast_ref::<turbo_vision::views::window::Window>().unwrap();
-        let before = win_before.child_at(0).bounds();
-        desktop.child_at_mut(0).set_bounds(Rect::new(10, 5, 120, 40));
-        let win_after = desktop.child_at(0).as_any().downcast_ref::<turbo_vision::views::window::Window>().unwrap();
-        let after = win_after.child_at(0).bounds();
-        println!("before={before:?} after={after:?}");
-        assert_ne!(before, after, "viewer DID resize; grow not needed");
-        let _ = desktop;
-    }
-}
