@@ -380,7 +380,7 @@ fn open_text_window(ui: &mut Ui, title: &str, text: &str, cascade: i16) {
     let y = ((h - win_h) / 2 + cascade * 2).clamp(0, (h - win_h - 1).max(0));
 
     let mut window = Window::new(Rect::new(x, y, x + win_w, y + win_h), title);
-    let mut viewer = TextViewer::new(Rect::new(0, 0, win_w - 2, win_h - 2));
+    let mut viewer = GrowingTextViewer::new(Rect::new(0, 0, win_w - 2, win_h - 2));
     viewer.set_text(text);
     window.add(Box::new(viewer));
     add_managed_window(ui, window, WinKey::next_aux());
@@ -697,6 +697,68 @@ fn show_shortcuts(ui: &mut Ui) {
         "F3      Open certificate into active set\nAlt+X   Exit\nArrows/Wheel  Scroll windows",
         MF_INFORMATION | MF_OK_BUTTON,
     );
+}
+
+// ---------------------------------------------------------------------------
+// GrowingTextViewer - framework TextViewer with grow mode so it tracks its
+// parent Window during resize (the framework's TextViewer does not implement
+// grow_mode, so as a plain child it keeps its initial size forever).
+// ---------------------------------------------------------------------------
+
+struct GrowingTextViewer {
+    viewer: TextViewer,
+    grow_mode: GrowFlags,
+}
+
+impl GrowingTextViewer {
+    fn new(bounds: Rect) -> Self {
+        Self {
+            viewer: TextViewer::new(bounds),
+            grow_mode: GF_GROW_HI_X | GF_GROW_HI_Y,
+        }
+    }
+
+    fn set_text(&mut self, text: &str) {
+        self.viewer.set_text(text);
+    }
+}
+
+impl View for GrowingTextViewer {
+    fn bounds(&self) -> Rect {
+        self.viewer.bounds()
+    }
+
+    fn set_bounds(&mut self, bounds: Rect) {
+        self.viewer.set_bounds(bounds);
+    }
+
+    fn draw(&mut self, terminal: &mut Terminal) {
+        self.viewer.draw(terminal);
+    }
+
+    fn handle_event(&mut self, event: &mut Event) {
+        self.viewer.handle_event(event);
+    }
+
+    fn get_palette(&self) -> Option<Palette> {
+        self.viewer.get_palette()
+    }
+
+    fn set_palette_chain(&mut self, node: Option<turbo_vision::core::palette_chain::PaletteChainNode>) {
+        self.viewer.set_palette_chain(node);
+    }
+
+    fn get_palette_chain(&self) -> Option<&turbo_vision::core::palette_chain::PaletteChainNode> {
+        self.viewer.get_palette_chain()
+    }
+
+    fn grow_mode(&self) -> GrowFlags {
+        self.grow_mode
+    }
+
+    fn set_grow_mode(&mut self, grow_mode: GrowFlags) {
+        self.grow_mode = grow_mode;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1214,5 +1276,35 @@ fn scroll_handler(event: &mut Event, offset: &mut usize) {
             event.clear();
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod growcheck_tmp {
+    use super::*;
+    use turbo_vision::views::desktop::Desktop;
+
+    #[test]
+    fn does_plain_textviewer_resize_with_window() {
+        let mut desktop = Desktop::new(Rect::new(0, 0, 120, 40));
+        let mut window = turbo_vision::views::window::WindowBuilder::new()
+            .bounds(Rect::new(10, 5, 70, 20))
+            .title("Custom Window")
+            .build();
+        let mut viewer = turbo_vision::views::text_viewer::TextViewerBuilder::new()
+            .bounds(Rect::new(0, 0, 58, 13))
+            .build();
+        viewer.set_text("hello");
+        window.add(Box::new(viewer));
+        desktop.add(Box::new(window));
+
+        let win_before = desktop.child_at(0).as_any().downcast_ref::<turbo_vision::views::window::Window>().unwrap();
+        let before = win_before.child_at(0).bounds();
+        desktop.child_at_mut(0).set_bounds(Rect::new(10, 5, 120, 40));
+        let win_after = desktop.child_at(0).as_any().downcast_ref::<turbo_vision::views::window::Window>().unwrap();
+        let after = win_after.child_at(0).bounds();
+        println!("before={before:?} after={after:?}");
+        assert_ne!(before, after, "viewer DID resize; grow not needed");
+        let _ = desktop;
     }
 }
