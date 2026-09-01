@@ -3,7 +3,7 @@ name = "certik"
 version = "0.1.0"
 edition = "2021"
 description = "HTTP(S) certificate manager: TUI + HTTPS API"
-license = "MIT"
+license = "AGPLv3"
 
 [dependencies]
 # TUI framework (Borland Turbo Vision port)
