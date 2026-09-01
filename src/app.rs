@@ -774,7 +774,7 @@ impl View for GrowingTextViewer {
 struct ServerLogView {
     bounds: Rect,
     log: SharedLog,
-    /// Lines scrolled back from the bottom (0 = follow tail).
+    /// Lines scrolled back from the bottom (0 = follow tail). this is nonsense and must be changed to normal
     offset: usize,
     grow_mode: GrowFlags,
 }
@@ -839,6 +839,10 @@ impl View for ServerLogView {
 
     fn handle_event(&mut self, event: &mut Event) {
         scroll_handler(event, &mut self.offset);
+    }
+
+    fn can_focus(&self) -> bool {
+        true
     }
 
     fn get_palette(&self) -> Option<Palette> {
@@ -1030,12 +1034,16 @@ impl View for CertSetView {
     }
 
     fn handle_event(&mut self, event: &mut Event) {
+        // Call scroll_handler which will update the offset
         scroll_handler(event, &mut self.offset);
-        // Forward to the shared border scrollbar: frame children are drawn on
-        // the border but do not receive events, so the interior routes them
-        // (this mirrors EditWindow, whose editor forwards to its scrollbars).
+        // Forward the event to the scrollbar in case it wasn't handled by scroll_handler
         self.v_scrollbar.borrow_mut().handle_event(event);
+        // Sync offset from scrollbar to ensure they're in sync
         self.offset = self.v_scrollbar.borrow().get_value() as usize;
+    }
+
+    fn can_focus(&self) -> bool {
+        true
     }
 
     fn get_palette(&self) -> Option<Palette> {
