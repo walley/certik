@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use turbo_vision::app::Application;
-use turbo_vision::core::command::{CommandId, CM_ABOUT, CM_COPY, CM_CUT, CM_PASTE, CM_QUIT, CM_REDO, CM_UNDO};
+use turbo_vision::core::command::{CommandId, CM_ABOUT, CM_CASCADE, CM_COPY, CM_CUT, CM_PASTE, CM_QUIT, CM_REDO, CM_TILE, CM_UNDO};
 use turbo_vision::core::draw::DrawBuffer;
 use turbo_vision::core::error::Result;
 use turbo_vision::core::event::{Event, EventType, KB_ALT_X, KB_DOWN, KB_F10, KB_F3, KB_UP};
@@ -31,7 +31,7 @@ use turbo_vision::views::file_dialog::FileDialog;
 use turbo_vision::views::menu_bar::{MenuBar, SubMenu};
 use turbo_vision::views::status_line::{StatusItem, StatusLine};
 use turbo_vision::views::scrollbar::ScrollBar;
-use turbo_vision::views::text_viewer::{TextViewer, TextViewerBuilder};
+use turbo_vision::views::text_viewer::TextViewerBuilder;
 use turbo_vision::views::view::{write_line_to_terminal, View};
 use turbo_vision::views::window::{Window, WindowBuilder};
 
@@ -120,7 +120,8 @@ pub fn run(log: SharedLog, sets: api::SharedSets, focus: api::SharedFocus, load_
     let sw_h = 11.min(h - 3).max(6);
     add_server_window(&mut ui, Rect::new(2, 1, 2 + sw_w, 1 + sw_h));
 
-    // Welcome window.
+    // Welcome window (added directly, not managed: it is purely informational
+    // and does not participate in minimize/zoom/tile bookkeeping).
     let welcome = format!(
         "certik v{}\n\n\
          HTTP(S) certificate handler / storage / manager / controller / deployer.\n\n\
@@ -134,7 +135,21 @@ pub fn run(log: SharedLog, sets: api::SharedSets, focus: api::SharedFocus, load_
          window for requests arriving at the endpoint.",
         env!("CARGO_PKG_VERSION")
     );
-    open_text_window(&mut ui, "Welcome", &welcome, 0);
+    let (ww, wh) = ui.app.terminal.size();
+    let win_w = (ww - 8).max(30);
+    let win_h = (wh - 6).max(8);
+    let x = (ww - win_w) / 2;
+    let y = (wh - win_h) / 2;
+    let mut welcome_window = WindowBuilder::new()
+        .bounds(Rect::new(x, y, x + win_w, y + win_h))
+        .title("Welcome")
+        .build();
+    let mut welcome_viewer = TextViewerBuilder::new()
+        .bounds(Rect::new(0, 0, win_w - 2, win_h - 2))
+        .build();
+    welcome_viewer.set_text(&welcome);
+    welcome_window.add(Box::new(welcome_viewer));
+    ui.app.desktop.add(Box::new(welcome_window));
 
     // Pre-load files from CLI flags (--cert, --key).
     if !load_certs.is_empty() || !load_keys.is_empty() {
@@ -215,6 +230,11 @@ fn main_loop(ui: &mut Ui) {
                     _ => {}
                 }
             }
+
+            // The framework's `run()` loop removes SF_CLOSED windows each
+            // iteration; certik runs its own loop, so replicate that sweep
+            // here so the frame close button actually closes windows.
+            ui.app.desktop.remove_closed_windows();
         }
 
         sync_scrollbars(ui);
@@ -313,6 +333,9 @@ fn build_menu_bar(app: &mut Application, w: i16) {
     menu_bar.add_submenu(SubMenu::new(
         "~W~indow",
         Menu::from_items(vec![
+            MenuItem::with_shortcut("~T~ile", CM_TILE, 0, "", 0),
+            MenuItem::with_shortcut("C~a~scade", CM_CASCADE, 0, "", 0),
+            MenuItem::separator(),
             MenuItem::new("~Z~oom / Restore", CM_WIN_ZOOM, 0, 0),
             MenuItem::new("Mi~n~imize", CM_WIN_MINIMIZE, 0, 0),
             MenuItem::new("~R~estore", CM_WIN_RESTORE, 0, 0),
@@ -383,10 +406,9 @@ fn open_text_window(ui: &mut Ui, title: &str, text: &str, cascade: i16) {
         .title(title)
         .build();
 
-    let viewer = TextViewerBuilder::new()
+    let mut viewer = TextViewerBuilder::new()
         .bounds(Rect::new(0, 0, win_w - 2, win_h - 2))
         .build();
-    let mut viewer = GrowingTextViewer::wrap(viewer);
     viewer.set_text(text);
     window.add(Box::new(viewer));
     add_managed_window(ui, window, WinKey::next_aux());
@@ -703,68 +725,6 @@ fn show_shortcuts(ui: &mut Ui) {
         "F3      Open certificate into active set\nAlt+X   Exit\nArrows/Wheel  Scroll windows",
         MF_INFORMATION | MF_OK_BUTTON,
     );
-}
-
-// ---------------------------------------------------------------------------
-// GrowingTextViewer - framework TextViewer with grow mode so it tracks its
-// parent Window during resize (the framework's TextViewer does not implement
-// grow_mode, so as a plain child it keeps its initial size forever).
-// ---------------------------------------------------------------------------
-
-struct GrowingTextViewer {
-    viewer: TextViewer,
-    grow_mode: GrowFlags,
-}
-
-impl GrowingTextViewer {
-    fn wrap(viewer: TextViewer) -> Self {
-        Self {
-            viewer,
-            grow_mode: GF_GROW_HI_X | GF_GROW_HI_Y,
-        }
-    }
-
-    fn set_text(&mut self, text: &str) {
-        self.viewer.set_text(text);
-    }
-}
-
-impl View for GrowingTextViewer {
-    fn bounds(&self) -> Rect {
-        self.viewer.bounds()
-    }
-
-    fn set_bounds(&mut self, bounds: Rect) {
-        self.viewer.set_bounds(bounds);
-    }
-
-    fn draw(&mut self, terminal: &mut Terminal) {
-        self.viewer.draw(terminal);
-    }
-
-    fn handle_event(&mut self, event: &mut Event) {
-        self.viewer.handle_event(event);
-    }
-
-    fn get_palette(&self) -> Option<Palette> {
-        self.viewer.get_palette()
-    }
-
-    fn set_palette_chain(&mut self, node: Option<turbo_vision::core::palette_chain::PaletteChainNode>) {
-        self.viewer.set_palette_chain(node);
-    }
-
-    fn get_palette_chain(&self) -> Option<&turbo_vision::core::palette_chain::PaletteChainNode> {
-        self.viewer.get_palette_chain()
-    }
-
-    fn grow_mode(&self) -> GrowFlags {
-        self.grow_mode
-    }
-
-    fn set_grow_mode(&mut self, grow_mode: GrowFlags) {
-        self.grow_mode = grow_mode;
-    }
 }
 
 // ---------------------------------------------------------------------------
