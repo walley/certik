@@ -100,6 +100,21 @@ struct Ui {
 }
 
 pub fn run(log: SharedLog, sets: api::SharedSets, focus: api::SharedFocus, load_certs: &[PathBuf], load_keys: &[PathBuf]) -> Result<()> {
+    // The framework's `View::as_any()` panics on views that don't override it
+    // (TextViewer, Background, ScrollBar, etc.). certik's `window_key` probes
+    // a window's last child for its own `WinKeyMarker` (the only view that
+    // overrides `as_any`); unmanaged windows (e.g. the welcome window) have a
+    // framework view there, which trips the default panic hook every frame.
+    // We catch those expected panics with `catch_unwind` and silence this
+    // specific message so they don't spam the terminal.
+    std::panic::set_hook(Box::new(|info| {
+        let msg = info.to_string();
+        if msg.contains("as_any() not implemented") {
+            return; // expected: certik probes for its own marker; not an error
+        }
+        eprintln!("{msg}");
+    }));
+
     let mut app = Application::new()?;
     let (w, h) = app.terminal.size();
 
@@ -461,15 +476,21 @@ fn new_certificate_set(ui: &mut Ui) {
 }
 
 /// Classify a window by probing its LAST child, which is always the certik
-/// `WinKeyMarker` installed by `add_managed_window`. Probes only that certik
-/// child (which overrides `as_any`); framework views such as `TextViewer`
-/// would panic on `as_any`, so they are never downcast.
+/// `WinKeyMarker` installed by `add_managed_window`.
+///
+/// Only `WinKeyMarker` (and certik's other custom views) override `as_any`;
+/// framework views such as `TextViewer` panic on `as_any`. Unmanaged windows
+/// (e.g. the welcome window) have no marker, so their last child is a plain
+/// framework view. We therefore probe defensively: a window whose last child
+/// is not a `WinKeyMarker` simply yields `None` instead of crashing the app.
 fn window_key(win: &Window) -> Option<WinKey> {
     let last = win.child_count().checked_sub(1)?;
-    win.child_at(last)
-        .as_any()
-        .downcast_ref::<WinKeyMarker>()
-        .map(|m| m.key)
+    let child = win.child_at(last);
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        child.as_any().downcast_ref::<WinKeyMarker>().map(|m| m.key)
+    }))
+    .ok()
+    .flatten()
 }
 
 /// Resolve the currently active certificate set: topmost CertSetView in the
@@ -734,7 +755,7 @@ fn show_shortcuts(ui: &mut Ui) {
 struct ServerLogView {
     bounds: Rect,
     log: SharedLog,
-    /// Lines scrolled back from the bottom (0 = follow tail). this is nonsense and must be changed to normal
+    /// Index of the first visible line (normal top-down scrolling).
     offset: usize,
     grow_mode: GrowFlags,
 }
@@ -789,8 +810,8 @@ impl View for ServerLogView {
         if self.offset > max_offset {
             self.offset = max_offset;
         }
-        let end = total.saturating_sub(self.offset);
-        let start = end.saturating_sub(height);
+        let start = self.offset;
+        let end = (start + height).min(total);
 
         for (row, line) in lines[start..end].iter().enumerate() {
             draw_text_line(terminal, self.bounds, row, line, width);

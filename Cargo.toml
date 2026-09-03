@@ -8,7 +8,7 @@ license = "AGPLv3"
 [dependencies]
 # TUI framework (Borland Turbo Vision port)
 # v2.0.0 from git — not yet published to crates.io.
-turbo-vision = { git = "https://github.com/aovestdipaperino/turbo-vision-4-rust", tag = "v2.0.0" }
+turbo-vision = { git = "https://github.com/aovestdipaperino/turbo-vision-4-rust", tag = "v2.2.1" }
 
 # Async runtime for the API subsystem
 tokio = { version = "1", features = ["full"] }
