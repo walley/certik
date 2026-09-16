@@ -17,22 +17,24 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use turbo_vision::app::Application;
-use turbo_vision::core::command::{CommandId, CM_ABOUT, CM_CASCADE, CM_COPY, CM_CUT, CM_PASTE, CM_QUIT, CM_REDO, CM_TILE, CM_UNDO};
+use turbo_vision::core::command::{CommandId, CM_CASCADE, CM_COPY, CM_CUT, CM_PASTE, CM_QUIT, CM_REDO, CM_TILE, CM_UNDO};
 use turbo_vision::core::draw::DrawBuffer;
 use turbo_vision::core::error::Result;
 use turbo_vision::core::event::{Event, EventType, KB_ALT_X, KB_DOWN, KB_F10, KB_F3, KB_UP};
 use turbo_vision::core::geometry::Rect;
-use turbo_vision::core::menu_data::{Menu, MenuItem};
+use turbo_vision::core::menu_data::MenuBuilder;
 use turbo_vision::core::palette::{Attr, TvColor, colors, Palette};
-use turbo_vision::core::state::{GF_GROW_HI_X, GF_GROW_HI_Y, GrowFlags};
-use turbo_vision::helpers::msgbox::{message_box, MF_ERROR, MF_INFORMATION, MF_OK_BUTTON};
+use turbo_vision::core::state::{Grow, GrowFlags};
+use turbo_vision::core::status_data::StatusItemBuilder;
 use turbo_vision::terminal::Terminal;
 use turbo_vision::views::file_dialog::FileDialog;
+use turbo_vision::views::group::GroupLike;
 use turbo_vision::views::menu_bar::{MenuBar, SubMenu};
-use turbo_vision::views::status_line::{StatusItem, StatusLine};
+use turbo_vision::views::msgbox::{message_box, MsgBox};
 use turbo_vision::views::scrollbar::ScrollBar;
+use turbo_vision::views::status_line::StatusLine;
 use turbo_vision::views::text_viewer::TextViewerBuilder;
-use turbo_vision::views::view::{write_line_to_terminal, View};
+use turbo_vision::views::view::{write_line_to_terminal, View, ViewCore};
 use turbo_vision::views::window::{Window, WindowBuilder};
 
 use crate::api::SharedLog;
@@ -49,6 +51,7 @@ const CM_INSPECT: CommandId = 205; // File > Inspect File...
 const CM_WIN_ZOOM: CommandId = 206; // Window > Zoom (maximize/restore)
 const CM_WIN_MINIMIZE: CommandId = 207; // Window > Minimize (shade)
 const CM_WIN_RESTORE: CommandId = 208; // Window > Restore
+const CM_ABOUT: CommandId = 209; // Help > About (framework 3.0 removed CM_ABOUT)
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -369,49 +372,49 @@ fn build_menu_bar(app: &mut Application, w: i16) {
 
     menu_bar.add_submenu(SubMenu::new(
         "~F~ile",
-        Menu::from_items(vec![
-            MenuItem::with_shortcut("~N~ew Certificate Set", CM_NEW_SET, 0, "", 0),
-            MenuItem::separator(),
-            MenuItem::with_shortcut("~O~pen Certificate...", CM_LOAD_CERT, KB_F3, "F3", 0),
-            MenuItem::with_shortcut("Open ~I~ntermediate...", CM_LOAD_INT, 0, "", 0),
-            MenuItem::with_shortcut("Open ~K~ey...", CM_LOAD_KEY, 0, "", 0),
-            MenuItem::with_shortcut("~I~nspect File...", CM_INSPECT, 0, "", 0),
-            MenuItem::separator(),
-            MenuItem::with_shortcut("E~x~it", CM_QUIT, KB_ALT_X, "Alt+X", 0),
-        ]),
+        MenuBuilder::new()
+            .item("~N~ew Certificate Set", CM_NEW_SET)
+            .separator()
+            .item_key("~O~pen Certificate...", CM_LOAD_CERT, "F3")
+            .item("Open ~I~ntermediate...", CM_LOAD_INT)
+            .item("Open ~K~ey...", CM_LOAD_KEY)
+            .item("~I~nspect File...", CM_INSPECT)
+            .separator()
+            .item_key("E~x~it", CM_QUIT, "Alt+X")
+            .build(),
     ));
 
     menu_bar.add_submenu(SubMenu::new(
         "~E~dit",
-        Menu::from_items(vec![
-            MenuItem::new("~U~ndo", CM_UNDO, 0, 0),
-            MenuItem::new("~R~edo", CM_REDO, 0, 0),
-            MenuItem::separator(),
-            MenuItem::new("Cu~t~", CM_CUT, 0, 0),
-            MenuItem::new("~C~opy", CM_COPY, 0, 0),
-            MenuItem::new("~P~aste", CM_PASTE, 0, 0),
-        ]),
+        MenuBuilder::new()
+            .item("~U~ndo", CM_UNDO)
+            .item("~R~edo", CM_REDO)
+            .separator()
+            .item("Cu~t~", CM_CUT)
+            .item("~C~opy", CM_COPY)
+            .item("~P~aste", CM_PASTE)
+            .build(),
     ));
 
     menu_bar.add_submenu(SubMenu::new(
         "~W~indow",
-        Menu::from_items(vec![
-            MenuItem::with_shortcut("~T~ile", CM_TILE, 0, "", 0),
-            MenuItem::with_shortcut("C~a~scade", CM_CASCADE, 0, "", 0),
-            MenuItem::separator(),
-            MenuItem::new("~Z~oom / Restore", CM_WIN_ZOOM, 0, 0),
-            MenuItem::new("Mi~n~imize", CM_WIN_MINIMIZE, 0, 0),
-            MenuItem::new("~R~estore", CM_WIN_RESTORE, 0, 0),
-        ]),
+        MenuBuilder::new()
+            .item("~T~ile", CM_TILE)
+            .item("C~a~scade", CM_CASCADE)
+            .separator()
+            .item("~Z~oom / Restore", CM_WIN_ZOOM)
+            .item("Mi~n~imize", CM_WIN_MINIMIZE)
+            .item("~R~estore", CM_WIN_RESTORE)
+            .build(),
     ));
 
     menu_bar.add_submenu(SubMenu::new(
         "~H~elp",
-        Menu::from_items(vec![
-            MenuItem::with_shortcut("~K~eyboard Shortcuts", CM_SHORTCUTS, 0, "", 0),
-            MenuItem::separator(),
-            MenuItem::with_shortcut("~A~bout...", CM_ABOUT, 0, "", 0),
-        ]),
+        MenuBuilder::new()
+            .item("~K~eyboard Shortcuts", CM_SHORTCUTS)
+            .separator()
+            .item("~A~bout...", CM_ABOUT)
+            .build(),
     ));
 
     app.set_menu_bar(menu_bar);
@@ -421,9 +424,21 @@ fn build_status_line(app: &mut Application, w: i16, h: i16) {
     app.set_status_line(StatusLine::new(
         Rect::new(0, h - 1, w, h),
         vec![
-            StatusItem::new("~F3~ Open Cert", KB_F3, CM_LOAD_CERT),
-            StatusItem::new("~F10~ Menu", KB_F10, 0),
-            StatusItem::new("~Alt+X~ Exit", KB_ALT_X, CM_QUIT),
+            StatusItemBuilder::new()
+                .text("~F3~ Open Cert")
+                .key_code(KB_F3)
+                .command(CM_LOAD_CERT)
+                .build(),
+            StatusItemBuilder::new()
+                .text("~F10~ Menu")
+                .key_code(KB_F10)
+                .command(0)
+                .build(),
+            StatusItemBuilder::new()
+                .text("~Alt+X~ Exit")
+                .key_code(KB_ALT_X)
+                .command(CM_QUIT)
+                .build(),
         ],
     ));
 }
@@ -444,7 +459,7 @@ fn add_managed_window(
 ) {
     // Marker is the last interior child so existing child indices (e.g. the
     // border scrollbar recorded earlier in `new_certificate_set`) stay stable.
-    window.add(Box::new(WinKeyMarker { key }));
+    window.add(Box::new(WinKeyMarker { key, core: ViewCore::new(Rect::new(0, 0, 1, 1)) }));
     ui.win_state.entry(key).or_default();
     ui.app.desktop.add(Box::new(window));
 }
@@ -517,7 +532,7 @@ fn new_certificate_set(ui: &mut Ui) {
         win_h - 2,
     ))));
     window.add(Box::new(CertSetView::new(interior, Arc::clone(&set), Rc::clone(&sb))));
-    let sb_idx = window.add_frame_child(Box::new(SharedScrollBar(Rc::clone(&sb))));
+    let sb_idx = window.add_frame_child(Box::new(SharedScrollBar(Rc::clone(&sb), ViewCore::new(Rect::new(0, 0, 0, 0)))));
     let key = WinKey::Set(id);
     ui.scrollbar_indices.insert(key, sb_idx);
     ui.scrollbars.insert(key, sb);
@@ -646,7 +661,7 @@ fn load_component(ui: &mut Ui, slot: LoadSlot) {
         message_box(
             &mut ui.app,
             "No certificate set window.\n\nUse File > New Certificate Set first.",
-            MF_INFORMATION | MF_OK_BUTTON,
+            MsgBox::INFORMATION | MsgBox::OK_BUTTON,
         );
         return;
     };
@@ -718,9 +733,9 @@ fn load_component(ui: &mut Ui, slot: LoadSlot) {
                         if ok { "completed" } else { "FAILED" }
                     ),
                     if ok {
-                        MF_INFORMATION | MF_OK_BUTTON
+                        MsgBox::INFORMATION | MsgBox::OK_BUTTON
                     } else {
-                        MF_ERROR | MF_OK_BUTTON
+                        MsgBox::ERROR | MsgBox::OK_BUTTON
                     },
                 );
             }
@@ -729,7 +744,7 @@ fn load_component(ui: &mut Ui, slot: LoadSlot) {
             message_box(
                 &mut ui.app,
                 &format!("Could not load file:\n{e}"),
-                MF_ERROR | MF_OK_BUTTON,
+                MsgBox::ERROR | MsgBox::OK_BUTTON,
             );
         }
     }
@@ -757,7 +772,7 @@ fn inspect_file(ui: &mut Ui) {
             message_box(
                 &mut ui.app,
                 &format!("Could not analyze file:\n{e}"),
-                MF_ERROR | MF_OK_BUTTON,
+                MsgBox::ERROR | MsgBox::OK_BUTTON,
             );
         }
     }
@@ -785,7 +800,7 @@ fn show_about(ui: &mut Ui) {
     message_box(
         &mut ui.app,
         "\x03Certik\n\x03 \nVersion 0.1.0\nHTTP(S) certificate manager.\n \x03TUI: turbo-vision | API: hyper + rustls",
-        MF_INFORMATION | MF_OK_BUTTON,
+        MsgBox::INFORMATION | MsgBox::OK_BUTTON,
     );
 }
 
@@ -793,7 +808,7 @@ fn show_shortcuts(ui: &mut Ui) {
     message_box(
         &mut ui.app,
         "F3      Open certificate into active set\nAlt+X   Exit\nArrows/Wheel  Scroll windows",
-        MF_INFORMATION | MF_OK_BUTTON,
+        MsgBox::INFORMATION | MsgBox::OK_BUTTON,
     );
 }
 
@@ -803,6 +818,7 @@ fn show_shortcuts(ui: &mut Ui) {
 
 struct ServerLogView {
     bounds: Rect,
+    core: ViewCore,
     log: SharedLog,
     /// Index of the first visible line (normal top-down scrolling).
     offset: usize,
@@ -811,11 +827,19 @@ struct ServerLogView {
 
 impl ServerLogView {
     fn new(bounds: Rect, log: Arc<Mutex<Vec<String>>>) -> Self {
-        Self { bounds, log, offset: 0, grow_mode: GF_GROW_HI_X | GF_GROW_HI_Y }
+        Self { bounds, core: ViewCore::new(bounds), log, offset: 0, grow_mode: Grow::HI_X | Grow::HI_Y }
     }
 }
 
 impl View for ServerLogView {
+    fn core(&self) -> &ViewCore {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut ViewCore {
+        &mut self.core
+    }
+
     fn bounds(&self) -> Rect {
         self.bounds
     }
@@ -879,6 +903,14 @@ impl View for ServerLogView {
         None
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn grow_mode(&self) -> GrowFlags {
         self.grow_mode
     }
@@ -897,9 +929,18 @@ impl View for ServerLogView {
 
 struct WinKeyMarker {
     key: WinKey,
+    core: ViewCore,
 }
 
 impl View for WinKeyMarker {
+    fn core(&self) -> &ViewCore {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut ViewCore {
+        &mut self.core
+    }
+
     fn bounds(&self) -> Rect {
         Rect::new(0, 0, 1, 1)
     }
@@ -930,9 +971,17 @@ impl View for WinKeyMarker {
 // so the view can update value/total while the window owns the border slot.
 // ---------------------------------------------------------------------------
 
-struct SharedScrollBar(Rc<RefCell<ScrollBar>>);
+struct SharedScrollBar(Rc<RefCell<ScrollBar>>, ViewCore);
 
 impl View for SharedScrollBar {
+    fn core(&self) -> &ViewCore {
+        &self.1
+    }
+
+    fn core_mut(&mut self) -> &mut ViewCore {
+        &mut self.1
+    }
+
     fn bounds(&self) -> Rect {
         self.0.borrow().bounds()
     }
@@ -976,6 +1025,7 @@ impl View for SharedScrollBar {
 
 struct CertSetView {
     bounds: Rect,
+    core: ViewCore,
     set: Arc<Mutex<CertSet>>,
     offset: usize,
     seen_version: u64,
@@ -988,12 +1038,13 @@ impl CertSetView {
     fn new(bounds: Rect, set: Arc<Mutex<CertSet>>, v_scrollbar: Rc<RefCell<ScrollBar>>) -> Self {
         Self {
             bounds,
+            core: ViewCore::new(bounds),
             set,
             offset: 0,
             seen_version: u64::MAX,
             cached_lines: Vec::new(),
             v_scrollbar,
-            grow_mode: GF_GROW_HI_X | GF_GROW_HI_Y,
+            grow_mode: Grow::HI_X | Grow::HI_Y,
         }
     }
 
@@ -1022,6 +1073,14 @@ impl CertSetView {
 }
 
 impl View for CertSetView {
+    fn core(&self) -> &ViewCore {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut ViewCore {
+        &mut self.core
+    }
+
     fn bounds(&self) -> Rect {
         self.bounds
     }
