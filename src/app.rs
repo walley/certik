@@ -169,8 +169,13 @@ pub fn run(log: SharedLog, sets: api::SharedSets, focus: api::SharedFocus, load_
         .build();
     let mut welcome_viewer = TextViewerBuilder::new()
         .bounds(Rect::new(0, 0, win_w - 2, win_h - 2))
+        .with_scrollbars(true)
         .build();
     welcome_viewer.set_text(&welcome);
+    // Grow the viewer with the window so its bounds track the window interior
+    // (the framework clips and scrolls text natively; without a grow mode the
+    // viewer stays a fixed size and overflows when the window is resized).
+    welcome_viewer.set_grow_mode(Grow::HI_X | Grow::HI_Y);
     welcome_window.add(Box::new(welcome_viewer));
     ui.app.desktop.add(Box::new(welcome_window));
 
@@ -799,7 +804,10 @@ fn run_file_dialog(app: &mut Application, title: &str) -> Option<PathBuf> {
 fn show_about(ui: &mut Ui) {
     message_box(
         &mut ui.app,
-        "\x03Certik\n\x03 \nVersion 0.1.0\nHTTP(S) certificate manager.\n \x03TUI: turbo-vision | API: hyper + rustls",
+        &format!(
+            "\x03Certik\n\x03 \nVersion {}\nHTTP(S) certificate manager.\n \x03TUI: turbo-vision | API: hyper + rustls",
+            env!("CARGO_PKG_VERSION")
+        ),
         MsgBox::INFORMATION | MsgBox::OK_BUTTON,
     );
 }
