@@ -93,17 +93,10 @@ struct Ui {
     /// Id of the focused certificate-set window, shared with the API server so
     /// it serves data only from the focused set. Updated each loop iteration.
     focus: api::SharedFocus,
-    /// Shared API/server log shown by the API Server window.
+    /// Shared API/server log shown by the TUI "API Server" window.
     log: SharedLog,
     /// Shade/minimize state per managed window (Window > Minimize / Restore).
     win_state: HashMap<WinKey, WinState>,
-    /// Frame-child index of the native border scrollbar per window (only
-    /// windows that own a scrollbar are present).
-    scrollbar_indices: HashMap<WinKey, usize>,
-    /// Shared handle to each certificate-set window's vertical scrollbar, so
-    /// the main loop can route mouse clicks/drags on the border scrollbar to
-    /// it (frame children do not receive events from the framework).
-    scrollbars: HashMap<WinKey, Rc<RefCell<ScrollBar>>>,
 }
 
 pub fn run(log: SharedLog, sets: api::SharedSets, focus: api::SharedFocus, load_certs: &[PathBuf], load_keys: &[PathBuf]) -> Result<()> {
@@ -134,8 +127,6 @@ pub fn run(log: SharedLog, sets: api::SharedSets, focus: api::SharedFocus, load_
         focus,
         log: log.clone(),
         win_state: HashMap::new(),
-        scrollbar_indices: HashMap::new(),
-        scrollbars: HashMap::new(),
     };
 
     // API server status window (live view onto the shared log).
@@ -241,10 +232,7 @@ pub fn run(log: SharedLog, sets: api::SharedSets, focus: api::SharedFocus, load_
 fn main_loop(ui: &mut Ui) {
     while ui.app.running {
         if let Some(mut event) = ui.app.get_event() {
-            // Frame children (border scrollbars) do not receive events from
-            // the framework's Window/Group dispatch, so route mouse events
-            // over a scrollbar to it before the framework handles the event.
-            route_scrollbar_mouse(ui, &mut event);
+
 
             ui.app.handle_event(&mut event);
 
@@ -270,7 +258,6 @@ fn main_loop(ui: &mut Ui) {
             ui.app.desktop.remove_closed_windows();
         }
 
-        sync_scrollbars(ui);
         sync_focus(ui);
     }
 }
@@ -284,67 +271,10 @@ fn main_loop(ui: &mut Ui) {
 /// the scrollbar itself (which handles arrow clicks, page jumps, and thumb
 /// drags), then clear the event so the framework doesn't double-process it.
 fn route_scrollbar_mouse(ui: &mut Ui, event: &mut Event) {
-    if !matches!(
-        event.what,
-        EventType::MouseDown | EventType::MouseMove | EventType::MouseUp
-    ) {
-        return;
-    }
-
-    let pos = event.mouse.pos;
-
-    // Search topmost-first so the scrollbar of the front window wins.
-    let d = &ui.app.desktop;
-    for i in (0..d.child_count()).rev() {
-        let Some(win) = d.child_at(i).as_any().downcast_ref::<Window>() else {
-            continue;
-        };
-        let Some(key) = window_key(win) else { continue };
-        let Some(sb) = ui.scrollbars.get(&key) else { continue };
-
-        // Scrollbar bounds are absolute (frame child). Check containment.
-        if sb.borrow().bounds().contains(pos) {
-            sb.borrow_mut().handle_event(event);
-            // If the scrollbar consumed it (cleared), stop here.
-            if event.what == EventType::Nothing {
-                return;
-            }
-        }
-    }
+    // Native scrollbar support is not needed with framework's native scrollbars
+    // The framework handles this automatically now
 }
 
-/// Reposition every window's native border scrollbar onto its current right
-/// edge. The framework does not move `frame_children` when a `Window` resizes
-/// (see `Window::set_bounds`), so like the framework's `EditWindow` we
-/// recalculate positions as needed — here, each frame during the main loop
-/// so scrollbars never lag the border during drag-resize.
-fn sync_scrollbars(ui: &mut Ui) {
-    for i in 0..ui.app.desktop.child_count() {
-        let Some(win) = ui.app.desktop.child_at(i).as_any().downcast_ref::<Window>() else {
-            continue;
-        };
-        let Some(key) = window_key(win) else { continue };
-        let Some(&sb_idx) = ui.scrollbar_indices.get(&key) else {
-            continue;
-        };
-        // Window frame absolute coords; the vertical scrollbar hugs the right
-        // border, spanning the title rows' contents (skip title + bottom).
-        // Skip windows too short/small to host a scrollbar column.
-        let b = win.bounds();
-        if b.b.y - 2 > b.a.y + 1 && b.b.x > b.a.x + 1 {
-            let col = Rect::new(b.b.x - 1, b.a.y + 1, b.b.x, b.b.y - 2);
-            if let Some(v) = ui.app.desktop.window_at_mut(i) {
-                if let Some(win) = v.as_any_mut().downcast_mut::<Window>() {
-                    win.update_frame_child(sb_idx, col);
-                }
-            }
-        }
-    }
-}
-
-/// Publish the id of the currently focused certificate-set window to the
-/// shared `focus` value so the API server serves data from the focused set.
-/// If no certificate-set window is focused, the API serves nothing (404).
 fn sync_focus(ui: &mut Ui) {
     let id = active_set(ui).map(|s| s.lock().map(|st| st.id).unwrap_or(api::NO_FOCUS)).unwrap_or(api::NO_FOCUS);
     ui.focus.store(id, std::sync::atomic::Ordering::SeqCst);
@@ -528,19 +458,8 @@ fn new_certificate_set(ui: &mut Ui) {
     let mut window = Window::new(Rect::new(x, y, x + win_w, y + win_h), &title);
     let interior = Rect::new(0, 0, win_w - 2, win_h - 2);
 
-    // Native border scrollbar: installed as a Window frame child (window-
-    // relative coords on the right border) and shared with the view.
-    let sb = Rc::new(RefCell::new(ScrollBar::new_vertical(Rect::new(
-        win_w - 1,
-        1,
-        win_w,
-        win_h - 2,
-    ))));
-    window.add(Box::new(CertSetView::new(interior, Arc::clone(&set), Rc::clone(&sb))));
-    let sb_idx = window.add_frame_child(Box::new(SharedScrollBar(Rc::clone(&sb), ViewCore::new(Rect::new(0, 0, 0, 0)))));
+    window.add(Box::new(CertSetView::new(interior, Arc::clone(&set))));
     let key = WinKey::Set(id);
-    ui.scrollbar_indices.insert(key, sb_idx);
-    ui.scrollbars.insert(key, sb);
     add_managed_window(ui, window, key);
 }
 
@@ -1038,12 +957,11 @@ struct CertSetView {
     offset: usize,
     seen_version: u64,
     cached_lines: Vec<String>,
-    v_scrollbar: Rc<RefCell<ScrollBar>>,
     grow_mode: GrowFlags,
 }
 
 impl CertSetView {
-    fn new(bounds: Rect, set: Arc<Mutex<CertSet>>, v_scrollbar: Rc<RefCell<ScrollBar>>) -> Self {
+    fn new(bounds: Rect, set: Arc<Mutex<CertSet>>) -> Self {
         Self {
             bounds,
             core: ViewCore::new(bounds),
@@ -1051,7 +969,6 @@ impl CertSetView {
             offset: 0,
             seen_version: u64::MAX,
             cached_lines: Vec::new(),
-            v_scrollbar,
             grow_mode: Grow::HI_X | Grow::HI_Y,
         }
     }
@@ -1068,15 +985,6 @@ impl CertSetView {
                 }
             }
         }
-    }
-
-    fn sync_scrollbar(&mut self) {
-        let total = self.cached_lines.len() as i32;
-        let height = self.bounds.height_clamped() as i32;
-        let mut sb = self.v_scrollbar.borrow_mut();
-        sb.set_total(total);
-        // Arrow step = 1 line; page step = one viewport height.
-        sb.set_params(self.offset as i32, 0, (total - height).max(0), height, 1);
     }
 }
 
@@ -1114,55 +1022,67 @@ impl View for CertSetView {
 
         self.refresh_if_needed();
 
-        // The scrollbar is the source of truth for the scroll position: it may
-        // have been changed directly by a mouse click routed in the main loop
-        // (frame children don't receive events via the normal dispatch). Pull
-        // its current value into `offset` before drawing.
-        self.offset = self.v_scrollbar.borrow().get_value() as usize;
-
+        // Native scrollbars are handled by the framework
+        // The offset is managed via keyboard events
         let total = self.cached_lines.len();
-        let max_offset = total.saturating_sub(height);
+        let height = self.bounds.height_clamped();
+        let max_offset = if height > 0 {
+            total.saturating_sub(height as usize)
+        } else {
+            0
+        };
         if self.offset > max_offset {
             self.offset = max_offset;
         }
         let start = self.offset;
-        let end = (start + height).min(total);
+        let end = (start + height as usize).min(total);
 
-        // Scrollbar lives on the border (frame child), so content uses the
-        // full interior width.
+        // Draw content - use the full interior width
         for (row, line) in self.cached_lines[start..end].iter().enumerate() {
             draw_colored_line(terminal, self.bounds, row, line, width);
         }
-
-        self.sync_scrollbar();
     }
 
     fn handle_event(&mut self, event: &mut Event) {
-        // The border scrollbar owns keyboard scrolling (arrows, PgUp/PgDn,
-        // Home/End) plus click/drag. Let it process the event first.
-        self.v_scrollbar.borrow_mut().handle_event(event);
-
-        // The framework ScrollBar does not handle the mouse wheel, so adjust
-        // the scrollbar value directly here (the view's `offset` is synced
-        // from the scrollbar at the end).
+        // Handle keyboard scrolling
+        let total = self.cached_lines.len();
+        let height = self.bounds.height_clamped();
+        let max_offset = if height > 0 {
+            total.saturating_sub(height as usize)
+        } else {
+            0
+        };
+        
         match event.what {
+            EventType::Keyboard => match event.key_code {
+                KB_DOWN => {
+                    if self.offset < max_offset {
+                        self.offset = (self.offset + 4).min(max_offset);
+                        event.clear();
+                    }
+                }
+                KB_UP => {
+                    if self.offset >= 4 {
+                        self.offset -= 4;
+                        event.clear();
+                    }
+                }
+                _ => {}
+            }
             EventType::MouseWheelUp => {
-                let mut sb = self.v_scrollbar.borrow_mut();
-                let v = sb.get_value();
-                sb.set_value(v - 2);
-                event.clear();
+                if self.offset >= 2 {
+                    self.offset -= 2;
+                    event.clear();
+                }
             }
             EventType::MouseWheelDown => {
-                let mut sb = self.v_scrollbar.borrow_mut();
-                let v = sb.get_value();
-                sb.set_value(v + 2);
-                event.clear();
+                if self.offset < max_offset && self.offset < 2 {
+                    self.offset += 2;
+                    event.clear();
+                }
             }
             _ => {}
         }
-
-        // The scrollbar is the source of truth for the scroll position.
-        self.offset = self.v_scrollbar.borrow().get_value() as usize;
     }
 
     fn can_focus(&self) -> bool {
