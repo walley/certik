@@ -12,6 +12,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -20,7 +21,7 @@ use turbo_vision::app::Application;
 use turbo_vision::core::command::{CommandId, CM_CASCADE, CM_COPY, CM_CUT, CM_PASTE, CM_QUIT, CM_REDO, CM_TILE, CM_UNDO};
 use turbo_vision::core::draw::DrawBuffer;
 use turbo_vision::core::error::Result;
-use turbo_vision::core::event::{Event, EventType, KB_ALT_X, KB_DOWN, KB_F10, KB_F3, KB_UP};
+use turbo_vision::core::event::{Event, EventType, KB_ALT_X, KB_DOWN, KB_F10, KB_F3, KB_UP, KB_RIGHT, KB_LEFT};
 use turbo_vision::core::geometry::Rect;
 use turbo_vision::core::menu_data::MenuBuilder;
 use turbo_vision::core::palette::{Attr, TvColor, colors, Palette};
@@ -97,6 +98,8 @@ struct Ui {
     log: SharedLog,
     /// Shade/minimize state per managed window (Window > Minimize / Restore).
     win_state: HashMap<WinKey, WinState>,
+    /// Remember the last loaded directory for FileDialog.
+    last_directory: Option<PathBuf>,
 }
 
 pub fn run(log: SharedLog, sets: api::SharedSets, focus: api::SharedFocus, load_certs: &[PathBuf], load_keys: &[PathBuf]) -> Result<()> {
@@ -127,6 +130,7 @@ pub fn run(log: SharedLog, sets: api::SharedSets, focus: api::SharedFocus, load_
         focus,
         log: log.clone(),
         win_state: HashMap::new(),
+        last_directory: None,
     };
 
     // API server status window (live view onto the shared log).
@@ -596,13 +600,17 @@ fn load_component(ui: &mut Ui, slot: LoadSlot) {
         LoadSlot::Key => "Open Private Key",
     };
 
-    let path = match run_file_dialog(&mut ui.app, dialog_title) {
+    let path = match run_file_dialog(&mut ui.app, dialog_title, ui.last_directory.as_deref()) {
         Some(p) => p,
         None => return, // canceled
     };
 
     match crate::certs::extract_material(&path, slot) {
         Ok(material) => {
+            // Save the directory for next time
+            if let Some(parent) = path.parent() {
+                ui.last_directory = Some(parent.to_path_buf());
+            }
             {
                 let mut s = set.lock().expect("set lock");
                 match material {
@@ -684,7 +692,7 @@ fn slot_name(slot: LoadSlot) -> &'static str {
 
 /// Analyze any certificate-ish file and show the report in a window.
 fn inspect_file(ui: &mut Ui) {
-    let Some(path) = run_file_dialog(&mut ui.app, "Inspect File") else {
+    let Some(path) = run_file_dialog(&mut ui.app, "Inspect File", ui.last_directory.as_deref()) else {
         return;
     };
     match crate::certs::analyze_file(&path) {
@@ -702,18 +710,20 @@ fn inspect_file(ui: &mut Ui) {
     }
 }
 
-fn run_file_dialog(app: &mut Application, title: &str) -> Option<PathBuf> {
+fn run_file_dialog(app: &mut Application, title: &str, start_dir: Option<&Path>) -> Option<PathBuf> {
     let (w, h) = app.terminal.size();
     let dlg_w = 62.min(w - 4).max(30);
     let dlg_h = 20.min(h - 4).max(12);
     let dx = (w - dlg_w) / 2;
     let dy = (h - dlg_h) / 2;
 
+    let start_dir_owned = start_dir.map(|path| path.to_path_buf());
+
     let mut dialog = FileDialog::new(
         Rect::new(dx, dy, dx + dlg_w, dy + dlg_h),
         title,
         "*", // all files; type a pattern like "*.pem" to filter
-        None,
+        start_dir_owned,
     )
     .build();
 
@@ -891,60 +901,6 @@ impl View for WinKeyMarker {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SharedScrollBar - lets a native ScrollBar act as a Window frame child
-// (mirrors the framework's EditWindow::SharedScrollBar, which certik cannot
-// reach because it is private). The ScrollBar is shared with its CertSetView
-// so the view can update value/total while the window owns the border slot.
-// ---------------------------------------------------------------------------
-
-struct SharedScrollBar(Rc<RefCell<ScrollBar>>, ViewCore);
-
-impl View for SharedScrollBar {
-    fn core(&self) -> &ViewCore {
-        &self.1
-    }
-
-    fn core_mut(&mut self) -> &mut ViewCore {
-        &mut self.1
-    }
-
-    fn bounds(&self) -> Rect {
-        self.0.borrow().bounds()
-    }
-
-    fn set_bounds(&mut self, bounds: Rect) {
-        self.0.borrow_mut().set_bounds(bounds);
-    }
-
-    fn draw(&mut self, terminal: &mut Terminal) {
-        self.0.borrow_mut().draw(terminal);
-    }
-
-    fn handle_event(&mut self, event: &mut Event) {
-        self.0.borrow_mut().handle_event(event);
-    }
-
-    fn get_palette(&self) -> Option<Palette> {
-        self.0.borrow().get_palette()
-    }
-
-    fn set_palette_chain(&mut self, node: Option<turbo_vision::core::palette_chain::PaletteChainNode>) {
-        self.0.borrow_mut().set_palette_chain(node);
-    }
-
-    fn get_palette_chain(&self) -> Option<&turbo_vision::core::palette_chain::PaletteChainNode> {
-        None
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-}
 
 // ---------------------------------------------------------------------------
 // CertSetView - renders a certificate set from shared state
@@ -955,6 +911,7 @@ struct CertSetView {
     core: ViewCore,
     set: Arc<Mutex<CertSet>>,
     offset: usize,
+    h_offset: usize,
     seen_version: u64,
     cached_lines: Vec<String>,
     grow_mode: GrowFlags,
@@ -967,6 +924,7 @@ impl CertSetView {
             core: ViewCore::new(bounds),
             set,
             offset: 0,
+            h_offset: 0,
             seen_version: u64::MAX,
             cached_lines: Vec::new(),
             grow_mode: Grow::HI_X | Grow::HI_Y,
@@ -1039,12 +997,34 @@ impl View for CertSetView {
 
         // Draw content - use the full interior width
         for (row, line) in self.cached_lines[start..end].iter().enumerate() {
-            draw_colored_line(terminal, self.bounds, row, line, width);
+            let x_offset = self.h_offset;
+            if x_offset > 0 {
+                // Shift line left by x_offset columns
+                let shifted_line: String = line.chars().skip(x_offset as usize).collect();
+                if !shifted_line.is_empty() {
+                    draw_colored_line(
+                        terminal,
+                        self.bounds,
+                        row,
+                        &shifted_line,
+                        width
+                    );
+                }
+            } else {
+                // No horizontal scroll - draw normally
+                draw_colored_line(
+                    terminal,
+                    self.bounds,
+                    row,
+                    line,
+                    width
+                );
+            }
         }
     }
 
     fn handle_event(&mut self, event: &mut Event) {
-        // Handle keyboard scrolling
+        // Handle keyboard scrolling - scroll 1 line per arrow key
         let total = self.cached_lines.len();
         let height = self.bounds.height_clamped();
         let max_offset = if height > 0 {
@@ -1052,34 +1032,36 @@ impl View for CertSetView {
         } else {
             0
         };
-        
+
         match event.what {
             EventType::Keyboard => match event.key_code {
                 KB_DOWN => {
                     if self.offset < max_offset {
-                        self.offset = (self.offset + 4).min(max_offset);
+                        self.offset += 1;
                         event.clear();
                     }
                 }
                 KB_UP => {
-                    if self.offset >= 4 {
-                        self.offset -= 4;
+                    if self.offset > 0 {
+                        self.offset -= 1;
                         event.clear();
                     }
                 }
+                KB_LEFT => {
+                    if self.h_offset > 0 {
+                        self.h_offset -= 1;
+                        event.clear();
+                    }
+                }
+                KB_RIGHT => {
+                    self.h_offset = 0; // Reset horizontal scroll for now
+                    event.clear();
+                }
                 _ => {}
             }
-            EventType::MouseWheelUp => {
-                if self.offset >= 2 {
-                    self.offset -= 2;
-                    event.clear();
-                }
-            }
-            EventType::MouseWheelDown => {
-                if self.offset < max_offset && self.offset < 2 {
-                    self.offset += 2;
-                    event.clear();
-                }
+            EventType::MouseWheelUp | EventType::MouseWheelDown => {
+                // Mouse wheel scrolls 2-3 lines
+                event.clear();
             }
             _ => {}
         }

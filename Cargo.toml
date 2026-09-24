@@ -7,7 +7,7 @@ license = "AGPLv3"
 
 [dependencies]
 # TUI framework (Borland Turbo Vision port)
-turbo-vision = "3.0.0"
+turbo-vision = "3.0.1"
 
 # Async runtime for the API subsystem
 tokio = { version = "1", features = ["full"] }
