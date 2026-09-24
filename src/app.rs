@@ -9,11 +9,9 @@
 //!     the active window via File > Open Certificate / Intermediate / Key.
 //!     Once a set is complete its chain/key/validity is verified automatically.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::path::Path;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -32,7 +30,6 @@ use turbo_vision::views::file_dialog::FileDialog;
 use turbo_vision::views::group::GroupLike;
 use turbo_vision::views::menu_bar::{MenuBar, SubMenu};
 use turbo_vision::views::msgbox::{message_box, MsgBox};
-use turbo_vision::views::scrollbar::ScrollBar;
 use turbo_vision::views::status_line::StatusLine;
 use turbo_vision::views::text_viewer::TextViewerBuilder;
 use turbo_vision::views::view::{write_line_to_terminal, View, ViewCore};
@@ -274,7 +271,7 @@ fn main_loop(ui: &mut Ui) {
 /// be dropped. Here we forward MouseDown/MouseMove/MouseUp over a scrollbar to
 /// the scrollbar itself (which handles arrow clicks, page jumps, and thumb
 /// drags), then clear the event so the framework doesn't double-process it.
-fn route_scrollbar_mouse(ui: &mut Ui, event: &mut Event) {
+fn route_scrollbar_mouse(_ui: &mut Ui, _event: &mut Event) {
     // Native scrollbar support is not needed with framework's native scrollbars
     // The framework handles this automatically now
 }
