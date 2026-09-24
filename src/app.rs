@@ -270,12 +270,6 @@ fn main_loop(ui: &mut Ui) {
 /// events). A mouse click on the scrollbar would otherwise fall through and
 /// be dropped. Here we forward MouseDown/MouseMove/MouseUp over a scrollbar to
 /// the scrollbar itself (which handles arrow clicks, page jumps, and thumb
-/// drags), then clear the event so the framework doesn't double-process it.
-fn route_scrollbar_mouse(_ui: &mut Ui, _event: &mut Event) {
-    // Native scrollbar support is not needed with framework's native scrollbars
-    // The framework handles this automatically now
-}
-
 fn sync_focus(ui: &mut Ui) {
     let id = active_set(ui).map(|s| s.lock().map(|st| st.id).unwrap_or(api::NO_FOCUS)).unwrap_or(api::NO_FOCUS);
     ui.focus.store(id, std::sync::atomic::Ordering::SeqCst);
@@ -727,12 +721,13 @@ fn run_file_dialog(app: &mut Application, title: &str, start_dir: Option<&Path>)
     dialog.execute(app)
 }
 
-fn show_about(ui: &mut Ui) {
+ fn show_about(ui: &mut Ui) {
     message_box(
         &mut ui.app,
         &format!(
-            "\x03Certik\n\x03 \nVersion {}\nHTTP(S) certificate manager.\n \x03TUI: turbo-vision | API: hyper + rustls",
-            env!("CARGO_PKG_VERSION")
+            "\x03Certik\n\x03 \nVersion {}\nHTTP(S) certificate manager.\n \x03TUI: turbo-vision ({})",
+            env!("CARGO_PKG_VERSION"),
+            "3.0.1"
         ),
         MsgBox::INFORMATION | MsgBox::OK_BUTTON,
     );
@@ -1051,7 +1046,7 @@ impl View for CertSetView {
                     }
                 }
                 KB_RIGHT => {
-                    self.h_offset = 0; // Reset horizontal scroll for now
+                    self.h_offset += 1;
                     event.clear();
                 }
                 _ => {}
