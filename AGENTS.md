@@ -13,13 +13,16 @@ Guidance for AI agents working in this repository.
 
 - `Cargo.toml` — single binary crate. Deps: `turbo-vision`, `tokio`, `hyper`,
   `hyper-util`, `http-body-util`, `bytes`, `tokio-rustls`, `rustls`,
-  `rustls-pemfile`, `rustls-pki-types`, `rcgen`, `openssl`, `chrono`.
+  `rustls-pemfile`, `rustls-pki-types`, `rcgen`, `openssl`, `chrono`, `rand`.
 - `src/main.rs` — CLI arg parsing, wires up shared state, spawns the API task
-  on a tokio runtime, then runs the TUI in the foreground.
+  on a tokio runtime, then runs the TUI in the foreground. Declares the crate
+  modules (`api`, `app`, `certs`, plus the games `snake`, `tetris`).
 - `src/app.rs` — the TUI (menu bar, status line, windows, custom views).
 - `src/api.rs` — HTTPS API server (TLS acceptor + hyper service) and routing.
 - `src/certs.rs` — PEM/DER decoding, report rendering, cert-set assembly and
   verification, plus export helpers.
+- `src/tetris.rs` — Tetris game view (Help > Tetris).
+- `src/snake.rs` — Nokia-style Snake game view (Help > Snake).
 
 ## Shared state & concurrency
 
@@ -64,7 +67,7 @@ views *do* override `as_any`. `window_key` wraps the probe in
 
 ### Custom views
 
-Four custom views implement `turbo_vision::views::View`:
+Six custom views implement `turbo_vision::views::View`:
 
 - `ServerLogView` — renders the shared API log, top-down scrolling.
 - `CertSetView` — renders a certificate set from shared state with syntax
@@ -79,6 +82,19 @@ Four custom views implement `turbo_vision::views::View`:
 - `ScrollBarWrapper` — wraps `Rc<RefCell<ScrollBar>>` to implement `View` so
   native scrollbars can be added as frame children via `Window::add_frame_child`.
 - `WinKeyMarker` — invisible/inert marker tying a window to its `WinKey`.
+- `TetrisView` (`src/tetris.rs`) — Tetris game. 10x20 well rendered from
+  per-row `DrawBuffer`s flushed once per row (`write_line_to_terminal`)
+  instead of element-by-element writes — a full row write blanks earlier
+  per-element writes on the same row. Pieces are classic SRS tetrominoes,
+  single-color (`TetrominoType::fg()`); `can_place` is the sole bounds check
+  (no x clamp) so pieces reach the right wall. Space = hard drop (+2/cell),
+  arrows move, up rotates with wall kicks, ESC restarts after game over.
+  Window background/board = `colors::NORMAL`; sidebar = `colors::DIALOG_NORMAL`;
+  next-piece preview derives from `Tetromino::blocks()`.
+- `SnakeView` (`src/snake.rs`) — Nokia-style Snake. Black "LCD" field framed by
+  a green border, green `█` snake, red `●` food. Arrows steer (one queued turn
+  per tick, no reversing into self), ESC restarts after game over, score sits in
+  a dialog-colored sidebar. Same per-row `DrawBuffer` rendering approach.
 
 **View trait requirements** (important): each custom view must provide `core()`
 and `core_mut()` returning a `ViewCore` (they store a `core` field), plus
@@ -116,8 +132,12 @@ apply the effective action (zoom falls back to the framework's
 Menus are built with `MenuBuilder` (`item`, `item_key`, `separator`, `build`);
 submenus via `MenuBar::add_submenu(SubMenu::new(...))`. Status items use
 `StatusItemBuilder`. Custom commands start at `CM_NEW_SET = 200` and go up
-through `CM_ABOUT = 209` (reserved range above `CM_USER`). `CM_ABOUT` is defined
-locally (the framework no longer ships one).
+through `CM_SNAKE = 211` (reserved range above `CM_USER`): `CM_ABOUT = 209`,
+`CM_TETRIS = 210`, `CM_SNAKE = 211`. `CM_ABOUT` is defined locally (the
+framework no longer ships one). The games are opened by `show_tetris` /
+`show_snake` in `app.rs`: each builds a **non-resizable** 40x26
+`WindowBuilder` window (`resizable(false)` — a `Dialog` broke
+`add_managed_window(Window)`) and installs its view with `WinKey::next_aux()`.
 
 ## API subsystem (`src/api.rs`)
 

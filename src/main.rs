@@ -6,6 +6,8 @@
 mod api;
 mod app;
 mod certs;
+mod snake;
+mod tetris;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
