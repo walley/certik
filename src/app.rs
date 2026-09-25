@@ -1204,6 +1204,27 @@ impl TetrisView {
         }
     }
 
+    /// Hard drop: move the current piece straight down until it lands,
+    /// award 2 points per cell dropped, then lock it.
+    fn hard_drop(&mut self) {
+        if let Some(cur) = self.current {
+            let mut dropped = cur;
+            let mut cells = 0u32;
+            loop {
+                let next = dropped.moved(0, 1);
+                if self.can_place(&next) {
+                    dropped = next;
+                    cells += 1;
+                } else {
+                    break;
+                }
+            }
+            self.current = Some(dropped);
+            self.score += cells * 2;
+            self.lock_piece();
+        }
+    }
+
     fn clear_lines(&mut self) {
         let mut cleared = 0;
         let mut y = TETRIS_HEIGHT - 1;
@@ -1299,6 +1320,9 @@ impl TetrisView {
                             }
                         }
                     }
+                }
+                0x20 => { // Space: hard drop to the ground
+                    self.hard_drop();
                 }
                 KB_ESC => {
                     // Could pause or quit
