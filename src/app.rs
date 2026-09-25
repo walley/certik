@@ -1028,57 +1028,61 @@ impl Tetromino {
     }
 
     fn blocks(&self) -> [(i8, i8); 4] {
-        let shapes = match self.ttype {
-            TetrominoType::I => [
-                [(0,0),(1,0),(2,0),(3,0)],
-                [(2,0),(2,1),(2,2),(2,3)],
-                [(0,1),(1,1),(2,1),(3,1)],
-                [(1,0),(1,1),(1,2),(1,3)],
-            ],
-            TetrominoType::J => [
-                [(0,0),(0,1),(1,1),(2,1)],
-                [(1,0),(2,0),(1,1),(1,2)],
-                [(0,0),(1,0),(2,0),(2,1)],
-                [(1,0),(1,1),(0,2),(1,2)],
-            ],
-            TetrominoType::L => [
-                [(2,0),(0,1),(1,1),(2,1)],
-                [(1,0),(1,1),(1,2),(2,2)],
-                [(0,0),(0,1),(1,0),(2,0)],
-                [(0,0),(1,0),(0,1),(0,2)],
-            ],
-            TetrominoType::O => [
-                [(0,0),(1,0),(0,1),(1,1)],
-                [(0,0),(1,0),(0,1),(1,1)],
-                [(0,0),(1,0),(0,1),(1,1)],
-                [(0,0),(1,0),(0,1),(1,1)],
-            ],
-            TetrominoType::S => [
-                [(1,0),(2,0),(0,1),(1,1)],
-                [(1,0),(1,1),(2,1),(2,2)],
-                [(1,0),(2,0),(0,1),(1,1)],
-                [(1,0),(1,1),(2,1),(2,2)],
-            ],
-            TetrominoType::T => [
-                [(1,0),(0,1),(1,1),(2,1)],
-                [(1,0),(1,1),(1,2),(2,1)],
-                [(0,0),(1,0),(2,0),(1,1)],
-                [(0,1),(1,0),(1,1),(1,2)],
-            ],
-            TetrominoType::Z => [
-                [(0,0),(1,0),(1,1),(2,1)],
-                [(2,0),(1,1),(2,1),(1,2)],
-                [(0,0),(1,0),(1,1),(2,1)],
-                [(2,0),(1,1),(2,1),(1,2)],
-            ],
+        // Standard tetromino blocks at rotation 0, centered around rotation center
+        // Each shape's blocks are relative to its rotation center
+        let (center_x, center_y, blocks) = match self.ttype {
+            TetrominoType::I => (0, 0, [
+                [(-2, 0), (-1, 0), (0, 0), (1, 0)],   // horizontal
+                [(0, -1), (0, 0), (0, 1), (0, 2)],     // vertical
+                [(-2, 0), (-1, 0), (0, 0), (1, 0)],    // horizontal
+                [(0, -1), (0, 0), (0, 1), (0, 2)],     // vertical
+            ]),
+            TetrominoType::J => (0, 0, [
+                [(-1, 0), (-1, -1), (0, 0), (1, 0)],   // ┘ shape
+                [(0, -1), (0, 0), (0, 1), (-1, 1)],    // ╥ shape
+                [(-1, 0), (0, 0), (1, 0), (1, 1)],     // └ shape
+                [(1, -1), (0, -1), (0, 0), (0, 1)],    // ╙ shape
+            ]),
+            TetrominoType::L => (0, 0, [
+                [(1, 0), (-1, -1), (0, 0), (1, -1)],   // └ shape (flipped J)
+                [(0, -1), (0, 0), (0, 1), (1, 1)],     // ╙ shape
+                [(-1, 0), (0, 0), (1, 0), (-1, 1)],    // ┘ shape
+                [(-1, -1), (0, -1), (0, 0), (0, 1)],   // ╥ shape
+            ]),
+            TetrominoType::O => (0, 0, [
+                [(0, 0), (1, 0), (0, 1), (1, 1)],      // square
+                [(0, 0), (1, 0), (0, 1), (1, 1)],      // square
+                [(0, 0), (1, 0), (0, 1), (1, 1)],      // square
+                [(0, 0), (1, 0), (0, 1), (1, 1)],      // square
+            ]),
+            TetrominoType::S => (0, 0, [
+                [(0, 0), (1, 0), (-1, -1), (0, -1)],   // horizontal S
+                [(0, 0), (0, -1), (1, -1), (1, -2)],   // vertical S
+                [(0, 0), (1, 0), (-1, -1), (0, -1)],   // horizontal S
+                [(0, 0), (0, -1), (1, -1), (1, -2)],   // vertical S
+            ]),
+            TetrominoType::T => (0, 0, [
+                [(-1, 0), (0, 0), (1, 0), (0, -1)],    // T up
+                [(0, -1), (0, 0), (0, 1), (1, 0)],     // T right
+                [(-1, 0), (0, 0), (1, 0), (0, 1)],     // T down
+                [(0, -1), (0, 0), (0, 1), (-1, 0)],    // T left
+            ]),
+            TetrominoType::Z => (0, 0, [
+                [(-1, 0), (0, 0), (0, -1), (1, -1)],   // horizontal Z
+                [(0, 0), (0, -1), (-1, -1), (-1, -2)], // vertical Z
+                [(-1, 0), (0, 0), (0, -1), (1, -1)],   // horizontal Z
+                [(0, 0), (0, -1), (-1, -1), (-1, -2)], // vertical Z
+            ]),
         };
+
         let rot = self.rotation as usize % 4;
-        let base = shapes[rot];
+        let (cx, cy) = (center_x + self.x, center_y + self.y);
+        let base = blocks[rot];
         [
-            (base[0].0 + self.x, base[0].1 + self.y),
-            (base[1].0 + self.x, base[1].1 + self.y),
-            (base[2].0 + self.x, base[2].1 + self.y),
-            (base[3].0 + self.x, base[3].1 + self.y),
+            (base[0].0 + cx, base[0].1 + cy),
+            (base[1].0 + cx, base[1].1 + cy),
+            (base[2].0 + cx, base[2].1 + cy),
+            (base[3].0 + cx, base[3].1 + cy),
         ]
     }
 
@@ -1102,7 +1106,7 @@ impl Tetromino {
 
     fn moved(&self, dx: i8, dy: i8) -> Self {
         let mut t = *self;
-        t.x = (t.x + dx).clamp(0, (TETRIS_WIDTH - 4) as i8);
+        t.x = (t.x + dx).clamp(-2, (TETRIS_WIDTH - 2) as i8);
         t.y = t.y + dy;
         t
     }
@@ -1435,14 +1439,15 @@ impl View for TetrisView {
                 }
             }
             // Draw next piece preview
+            // Preview at rotation 0, centered in preview area
             let preview = match self.next {
-                TetrominoType::I => [(0,0),(1,0),(2,0),(3,0)],
-                TetrominoType::J => [(0,0),(0,1),(1,1),(2,1)],
-                TetrominoType::L => [(2,0),(0,1),(1,1),(2,1)],
-                TetrominoType::O => [(0,0),(1,0),(0,1),(1,1)],
-                TetrominoType::S => [(1,0),(2,0),(0,1),(1,1)],
-                TetrominoType::T => [(1,0),(0,1),(1,1),(2,1)],
-                TetrominoType::Z => [(0,0),(1,0),(1,1),(2,1)],
+                TetrominoType::I => [(-2, 0), (-1, 0), (0, 0), (1, 0)],
+                TetrominoType::J => [(-1, 0), (-1, -1), (0, 0), (1, 0)],
+                TetrominoType::L => [(1, 0), (-1, -1), (0, 0), (1, -1)],
+                TetrominoType::O => [(0, 0), (1, 0), (0, 1), (1, 1)],
+                TetrominoType::S => [(0, 0), (1, 0), (-1, -1), (0, -1)],
+                TetrominoType::T => [(-1, 0), (0, 0), (1, 0), (0, -1)],
+                TetrominoType::Z => [(-1, 0), (0, 0), (0, -1), (1, -1)],
             };
             let next_attr = match self.next {
                 TetrominoType::I => Attr::new(TvColor::LightCyan, TvColor::Black),
@@ -1454,8 +1459,8 @@ impl View for TetrisView {
                 TetrominoType::Z => Attr::new(TvColor::White, TvColor::Black),
             };
             for (px, py) in preview {
-                let x = info_x + (px as usize) * TETRIS_CELL_W;
-                let y = start_y + 6 + (py as usize) * TETRIS_CELL_H;
+                let x = info_x + ((px + 2) as usize) * TETRIS_CELL_W; // offset to center
+                let y = start_y + 6 + ((-py + 2) as usize) * TETRIS_CELL_H;
                 if x + 1 < width && y < height {
                     let mut buf = DrawBuffer::new(width);
                     buf.move_str(x, "██", next_attr);
