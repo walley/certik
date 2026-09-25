@@ -1339,7 +1339,7 @@ impl View for TetrisView {
         let start_x = (width.saturating_sub(board_w + 14)) / 2; // Reserve space for sidebar
         let start_y = (height.saturating_sub(board_h)) / 2;
 
-        // Clear entire window with dialog background
+        // Clear entire window with dialog background (standard app color)
         for y in 0..height {
             let blank = " ".repeat(width);
             let mut buf = DrawBuffer::new(width);
@@ -1347,18 +1347,7 @@ impl View for TetrisView {
             write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
         }
 
-        // Draw board background (black)
-        let bg_attr = Attr::new(TvColor::Black, TvColor::Black);
-        for row in 0..TETRIS_HEIGHT {
-            let y = start_y + row;
-            if y < height {
-                let mut buf = DrawBuffer::new(width);
-                buf.move_str(start_x, &"  ".repeat(TETRIS_WIDTH), bg_attr);
-                write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
-            }
-        }
-
-        // Draw board border
+        // Draw board border FIRST (dark gray)
         let border_attr = Attr::new(TvColor::DarkGray, TvColor::Black);
         for y in 0..=board_h {
             for x in [start_x.saturating_sub(1), start_x + board_w] {
@@ -1373,8 +1362,42 @@ impl View for TetrisView {
             for y in [start_y.saturating_sub(1), start_y + board_h] {
                 if y < height {
                     let mut buf = DrawBuffer::new(width);
-                    let ch = if x == 0 || x == board_w + 1 { "┤" } else { "─" };
+                    // Use "┐" for top-right, "└" for bottom-left, "─" for horizontal
+                    let ch = if x == board_w + 1 && y == start_y.saturating_sub(1) {
+                        "┐"
+                    } else if x == board_w + 1 && y == start_y + board_h {
+                        "┘"
+                    } else if y == start_y.saturating_sub(1) || y == start_y + board_h {
+                        "─"
+                    } else {
+                        "│"
+                    };
                     buf.move_str(start_x + x, ch, border_attr);
+                    write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+                }
+            }
+        }
+
+        // Draw board background (standard blue like app)
+        let board_bg_attr = Attr::new(TvColor::White, TvColor::Blue);
+        for row in 0..TETRIS_HEIGHT {
+            let y = start_y + row;
+            if y < height {
+                let mut buf = DrawBuffer::new(width);
+                buf.move_str(start_x, &"  ".repeat(TETRIS_WIDTH), board_bg_attr);
+                write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+            }
+        }
+
+        // Draw sidebar background (dialog color)
+        let sidebar_bg_attr = Attr::new(TvColor::White, TvColor::Black);
+        let info_x = start_x + board_w + 2;
+        if info_x + 12 < width {
+            for row in 0..TETRIS_HEIGHT {
+                let y = start_y + row;
+                if y < height {
+                    let mut buf = DrawBuffer::new(width);
+                    buf.move_str(info_x, &" ".repeat(12), sidebar_bg_attr);
                     write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
                 }
             }
@@ -1385,13 +1408,13 @@ impl View for TetrisView {
             for (col, cell) in line.iter().enumerate() {
                 if let Some(ttype) = cell {
                     let attr = match ttype {
-                        TetrominoType::I => Attr::new(TvColor::LightCyan, TvColor::Black),
-                        TetrominoType::J => Attr::new(TvColor::LightBlue, TvColor::Black),
-                        TetrominoType::L => Attr::new(TvColor::Yellow, TvColor::Black),
-                        TetrominoType::O => Attr::new(TvColor::LightGreen, TvColor::Black),
-                        TetrominoType::S => Attr::new(TvColor::LightRed, TvColor::Black),
-                        TetrominoType::T => Attr::new(TvColor::LightMagenta, TvColor::Black),
-                        TetrominoType::Z => Attr::new(TvColor::White, TvColor::Black),
+                        TetrominoType::I => Attr::new(TvColor::LightCyan, TvColor::Blue),
+                        TetrominoType::J => Attr::new(TvColor::LightBlue, TvColor::Blue),
+                        TetrominoType::L => Attr::new(TvColor::Yellow, TvColor::Blue),
+                        TetrominoType::O => Attr::new(TvColor::LightGreen, TvColor::Blue),
+                        TetrominoType::S => Attr::new(TvColor::LightRed, TvColor::Blue),
+                        TetrominoType::T => Attr::new(TvColor::LightMagenta, TvColor::Blue),
+                        TetrominoType::Z => Attr::new(TvColor::White, TvColor::Blue),
                     };
                     let x = start_x + col * TETRIS_CELL_W;
                     let y = start_y + row * TETRIS_CELL_H;
@@ -1406,7 +1429,9 @@ impl View for TetrisView {
 
         // Draw current piece
         if let Some(cur) = self.current {
-            let attr = cur.color();
+            let cur_attr = cur.color();
+            // Force blue background by creating new Attr with same fg
+            let attr = Attr::new(cur_attr.fg, TvColor::Blue);
             for (x, y) in cur.blocks() {
                 if y >= 0 && y < TETRIS_HEIGHT as i8 && x >= 0 && x < TETRIS_WIDTH as i8 {
                     let draw_x = start_x + (x as usize) * TETRIS_CELL_W;
@@ -1420,8 +1445,44 @@ impl View for TetrisView {
             }
         }
 
-        // Draw sidebar info (to the right of board)
-        let info_x = start_x + board_w + 2;
+        // Draw sidebar background (dialog color) - draw first
+        if info_x + 12 < width {
+            let sidebar_bg_attr = Attr::new(TvColor::White, TvColor::Black);
+            for row in 0..TETRIS_HEIGHT {
+                let y = start_y + row;
+                if y < height {
+                    let mut buf = DrawBuffer::new(width);
+                    buf.move_str(info_x, &" ".repeat(12), sidebar_bg_attr);
+                    write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+                }
+            }
+        }
+
+        // Draw locked pieces
+        for (row, line) in self.board.iter().enumerate() {
+            for (col, cell) in line.iter().enumerate() {
+                if let Some(ttype) = cell {
+                    let attr = match ttype {
+                        TetrominoType::I => Attr::new(TvColor::LightCyan, TvColor::Blue),
+                        TetrominoType::J => Attr::new(TvColor::LightBlue, TvColor::Blue),
+                        TetrominoType::L => Attr::new(TvColor::Yellow, TvColor::Blue),
+                        TetrominoType::O => Attr::new(TvColor::LightGreen, TvColor::Blue),
+                        TetrominoType::S => Attr::new(TvColor::LightRed, TvColor::Blue),
+                        TetrominoType::T => Attr::new(TvColor::LightMagenta, TvColor::Blue),
+                        TetrominoType::Z => Attr::new(TvColor::White, TvColor::Blue),
+                    };
+                    let x = start_x + col * TETRIS_CELL_W;
+                    let y = start_y + row * TETRIS_CELL_H;
+                    if x + 1 < width && y < height {
+                        let mut buf = DrawBuffer::new(width);
+                        buf.move_str(x, "██", attr);
+                        write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+                    }
+                }
+            }
+        }
+
+        // Draw sidebar info (to the right of board) - LAST so it's on top
         if info_x + 12 < width {
             let lines = [
                 format!("Score:{:>5}", self.score),
@@ -1434,13 +1495,12 @@ impl View for TetrisView {
                 let y = start_y + i;
                 if y < height {
                     let mut buf = DrawBuffer::new(width);
-                    buf.move_str(info_x, line, Attr::new(TvColor::White, TvColor::Black));
+                    buf.move_str(info_x, line, Attr::new(TvColor::Yellow, TvColor::Black));
                     write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
                 }
             }
             // Draw next piece preview
-            // Preview at rotation 0, centered in preview area
-            let preview = match self.next {
+            let preview: [(isize, isize); 4] = match self.next {
                 TetrominoType::I => [(-2, 0), (-1, 0), (0, 0), (1, 0)],
                 TetrominoType::J => [(-1, 0), (-1, -1), (0, 0), (1, 0)],
                 TetrominoType::L => [(1, 0), (-1, -1), (0, 0), (1, -1)],
@@ -1459,7 +1519,7 @@ impl View for TetrisView {
                 TetrominoType::Z => Attr::new(TvColor::White, TvColor::Black),
             };
             for (px, py) in preview {
-                let x = info_x + ((px + 2) as usize) * TETRIS_CELL_W; // offset to center
+                let x = info_x + ((px + 2) as usize) * TETRIS_CELL_W;
                 let y = start_y + 6 + ((-py + 2) as usize) * TETRIS_CELL_H;
                 if x + 1 < width && y < height {
                     let mut buf = DrawBuffer::new(width);
