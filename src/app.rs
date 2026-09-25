@@ -830,7 +830,8 @@ fn show_shortcuts(ui: &mut Ui) {
 
 fn show_tetris(ui: &mut Ui) {
     let (w, h) = ui.app.terminal.size();
-    let win_w = 32;
+    // Wide enough for the 20-wide board plus the dialog-colored sidebar.
+    let win_w = 40;
     let win_h = 26;
     let x = (w - win_w) / 2;
     let y = (h - win_h) / 2;
@@ -1058,10 +1059,10 @@ impl Tetromino {
                 [(1, -1), (0, -1), (0, 0), (0, 1)],    // ╙ shape
             ]),
             TetrominoType::L => (0, 0, [
-                [(1, 0), (-1, -1), (0, 0), (1, -1)],   // └ shape (flipped J)
-                [(0, -1), (0, 0), (0, 1), (1, 1)],     // ╙ shape
-                [(-1, 0), (0, 0), (1, 0), (-1, 1)],    // ┘ shape
-                [(-1, -1), (0, -1), (0, 0), (0, 1)],   // ╥ shape
+                [(1, 0), (1, -1), (0, 0), (-1, 0)],   // mirror of J spawn
+                [(0, -1), (0, 0), (0, 1), (1, 1)],
+                [(-1, 0), (0, 0), (1, 0), (-1, 1)],
+                [(-1, -1), (0, -1), (0, 0), (0, 1)],
             ]),
             TetrominoType::O => (0, 0, [
                 [(0, 0), (1, 0), (0, 1), (1, 1)],      // square
