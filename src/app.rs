@@ -1479,20 +1479,14 @@ fn draw(&mut self, terminal: &mut Terminal) {
                     rows[y].move_str(info_x, line, dialog_bg);
                 }
             }
-            // Next-piece preview on the dialog-colored sidebar
-            let preview: [(isize, isize); 4] = match self.next {
-                TetrominoType::I => [(-2, 0), (-1, 0), (0, 0), (1, 0)],
-                TetrominoType::J => [(-1, 0), (-1, -1), (0, 0), (1, 0)],
-                TetrominoType::L => [(1, 0), (-1, -1), (0, 0), (1, -1)],
-                TetrominoType::O => [(0, 0), (1, 0), (0, 1), (1, 1)],
-                TetrominoType::S => [(0, 0), (1, 0), (-1, -1), (0, -1)],
-                TetrominoType::T => [(-1, 0), (0, 0), (1, 0), (0, -1)],
-                TetrominoType::Z => [(-1, 0), (0, 0), (0, -1), (1, -1)],
-            };
+            // Next-piece preview on the dialog-colored sidebar.
+            // Derived from blocks() (rotation 0, centered at origin) so the
+            // preview always matches the actual piece shapes.
+            let next_piece = Tetromino { ttype: self.next, x: 0, y: 0, rotation: 0 };
             let next_attr = Attr::new(self.next.fg(), TvColor::LightGray);
-            for (px, py) in preview {
-                let x = info_x + ((px + 2) as usize) * TETRIS_CELL_W;
-                let y = start_y + 6 + ((-py + 2) as usize) * TETRIS_CELL_H;
+            for (bx, by) in next_piece.blocks() {
+                let x = info_x + ((bx as isize + 2) as usize) * TETRIS_CELL_W;
+                let y = start_y + 6 + ((-(by as isize) + 2) as usize) * TETRIS_CELL_H;
                 if x + 1 < width && y < height {
                     rows[y].move_str(x, "██", next_attr);
                 }
