@@ -18,7 +18,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use rand::rngs::ThreadRng;
-use rand::Rng;
 
 use turbo_vision::app::Application;
 use turbo_vision::core::command::{CommandId, CM_CASCADE, CM_COPY, CM_CUT, CM_PASTE, CM_QUIT, CM_REDO, CM_TILE, CM_UNDO};
@@ -1014,6 +1013,21 @@ enum TetrominoType {
     I, J, L, O, S, T, Z,
 }
 
+impl TetrominoType {
+    /// Foreground color for a piece on the blue board.
+    fn fg(self) -> TvColor {
+        match self {
+            TetrominoType::I => TvColor::LightCyan,
+            TetrominoType::J => TvColor::LightBlue,
+            TetrominoType::L => TvColor::Yellow,
+            TetrominoType::O => TvColor::LightGreen,
+            TetrominoType::S => TvColor::LightRed,
+            TetrominoType::T => TvColor::LightMagenta,
+            TetrominoType::Z => TvColor::White,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Tetromino {
     ttype: TetrominoType,
@@ -1084,18 +1098,6 @@ impl Tetromino {
             (base[2].0 + cx, base[2].1 + cy),
             (base[3].0 + cx, base[3].1 + cy),
         ]
-    }
-
-    fn color(&self) -> Attr {
-        match self.ttype {
-            TetrominoType::I => Attr::new(TvColor::LightCyan, TvColor::Black),
-            TetrominoType::J => Attr::new(TvColor::LightBlue, TvColor::Black),
-            TetrominoType::L => Attr::new(TvColor::Yellow, TvColor::Black),
-            TetrominoType::O => Attr::new(TvColor::LightGreen, TvColor::Black),
-            TetrominoType::S => Attr::new(TvColor::LightRed, TvColor::Black),
-            TetrominoType::T => Attr::new(TvColor::LightMagenta, TvColor::Black),
-            TetrominoType::Z => Attr::new(TvColor::White, TvColor::Black),
-        }
     }
 
     fn rotated(&self) -> Self {
@@ -1330,7 +1332,7 @@ impl View for TetrisView {
     fn set_bounds(&mut self, bounds: Rect) {
         self.bounds = bounds;
     }
-    fn draw(&mut self, terminal: &mut Terminal) {
+fn draw(&mut self, terminal: &mut Terminal) {
         self.tick();
         let width = self.bounds.width_clamped() as usize;
         let height = self.bounds.height_clamped() as usize;
@@ -1338,151 +1340,103 @@ impl View for TetrisView {
         let board_h = TETRIS_HEIGHT * TETRIS_CELL_H;
         let start_x = (width.saturating_sub(board_w + 14)) / 2; // Reserve space for sidebar
         let start_y = (height.saturating_sub(board_h)) / 2;
+        let info_x = start_x + board_w + 2;
 
-        // Clear entire window with dialog background (standard app color)
+        // One buffer per window row. Everything is stamped into the buffers
+        // first and flushed once at the end, so no single line write can wipe
+        // out the border, board, or previously drawn cells mid-frame.
+        let mut rows: Vec<DrawBuffer> = (0..height).map(|_| DrawBuffer::new(width)).collect();
+
+        // --- Window background: standard app blue ---------------------------
         for y in 0..height {
-            let blank = " ".repeat(width);
-            let mut buf = DrawBuffer::new(width);
-            buf.move_str(0, &blank, colors::NORMAL);
-            write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+            rows[y].move_str(0, &" ".repeat(width), colors::NORMAL);
         }
 
-        // Draw board border FIRST (dark gray)
-        let border_attr = Attr::new(TvColor::DarkGray, TvColor::Black);
-        for y in 0..=board_h {
-            for x in [start_x.saturating_sub(1), start_x + board_w] {
-                if x < width {
-                    let mut buf = DrawBuffer::new(width);
-                    buf.move_str(x, "│", border_attr);
-                    write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + start_y as i16 + y as i16, &buf);
-                }
-            }
-        }
-        for x in 0..=board_w + 1 {
-            for y in [start_y.saturating_sub(1), start_y + board_h] {
-                if y < height {
-                    let mut buf = DrawBuffer::new(width);
-                    // Use "┐" for top-right, "└" for bottom-left, "─" for horizontal
-                    let ch = if x == board_w + 1 && y == start_y.saturating_sub(1) {
-                        "┐"
-                    } else if x == board_w + 1 && y == start_y + board_h {
-                        "┘"
-                    } else if y == start_y.saturating_sub(1) || y == start_y + board_h {
-                        "─"
-                    } else {
-                        "│"
-                    };
-                    buf.move_str(start_x + x, ch, border_attr);
-                    write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
-                }
-            }
-        }
-
-        // Draw board background (standard blue like app)
-        let board_bg_attr = Attr::new(TvColor::White, TvColor::Blue);
+        // --- Board background: standard blue ---------------------------------
         for row in 0..TETRIS_HEIGHT {
             let y = start_y + row;
             if y < height {
-                let mut buf = DrawBuffer::new(width);
-                buf.move_str(start_x, &"  ".repeat(TETRIS_WIDTH), board_bg_attr);
-                write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+                rows[y].move_str(start_x, &"  ".repeat(TETRIS_WIDTH), colors::NORMAL);
             }
         }
 
-        // Draw sidebar background (dialog color)
-        let sidebar_bg_attr = Attr::new(TvColor::White, TvColor::Black);
-        let info_x = start_x + board_w + 2;
+        // --- Sidebar background: dialog color (black on light gray) ----------
+        let dialog_bg = colors::DIALOG_NORMAL;
         if info_x + 12 < width {
             for row in 0..TETRIS_HEIGHT {
                 let y = start_y + row;
                 if y < height {
-                    let mut buf = DrawBuffer::new(width);
-                    buf.move_str(info_x, &" ".repeat(12), sidebar_bg_attr);
-                    write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+                    rows[y].move_str(info_x, &" ".repeat(12), dialog_bg);
                 }
             }
         }
 
-        // Draw locked pieces
+        // --- Board border: clean box, drawn into the buffers -----------------
+        // Corners sit at (start_x-1, start_y-1) .. (start_x+board_w, start_y+board_h).
+        let border_attr = Attr::new(TvColor::LightCyan, TvColor::Blue);
+        if start_y > 0 && start_y - 1 < height {
+            let top = start_y - 1;
+            if start_x > 0 {
+                rows[top].move_char(start_x - 1, '┌', border_attr, 1);
+            }
+            if start_x + board_w < width {
+                rows[top].move_char(start_x + board_w, '┐', border_attr, 1);
+            }
+            if start_x < width {
+                rows[top].move_char(start_x, '─', border_attr, board_w);
+            }
+        }
+        let bottom = start_y + board_h;
+        if bottom < height {
+            if start_x > 0 {
+                rows[bottom].move_char(start_x - 1, '└', border_attr, 1);
+            }
+            if start_x + board_w < width {
+                rows[bottom].move_char(start_x + board_w, '┘', border_attr, 1);
+            }
+            if start_x < width {
+                rows[bottom].move_char(start_x, '─', border_attr, board_w);
+            }
+        }
+        for y in start_y..start_y + board_h {
+            if y < height {
+                if start_x > 0 {
+                    rows[y].move_char(start_x - 1, '│', border_attr, 1);
+                }
+                if start_x + board_w < width {
+                    rows[y].move_char(start_x + board_w, '│', border_attr, 1);
+                }
+            }
+        }
+
+        // --- Locked pieces ---------------------------------------------------
         for (row, line) in self.board.iter().enumerate() {
             for (col, cell) in line.iter().enumerate() {
                 if let Some(ttype) = cell {
-                    let attr = match ttype {
-                        TetrominoType::I => Attr::new(TvColor::LightCyan, TvColor::Blue),
-                        TetrominoType::J => Attr::new(TvColor::LightBlue, TvColor::Blue),
-                        TetrominoType::L => Attr::new(TvColor::Yellow, TvColor::Blue),
-                        TetrominoType::O => Attr::new(TvColor::LightGreen, TvColor::Blue),
-                        TetrominoType::S => Attr::new(TvColor::LightRed, TvColor::Blue),
-                        TetrominoType::T => Attr::new(TvColor::LightMagenta, TvColor::Blue),
-                        TetrominoType::Z => Attr::new(TvColor::White, TvColor::Blue),
-                    };
                     let x = start_x + col * TETRIS_CELL_W;
                     let y = start_y + row * TETRIS_CELL_H;
                     if x + 1 < width && y < height {
-                        let mut buf = DrawBuffer::new(width);
-                        buf.move_str(x, "██", attr);
-                        write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+                        rows[y].move_str(x, "██", Attr::new(ttype.fg(), TvColor::Blue));
                     }
                 }
             }
         }
 
-        // Draw current piece
+        // --- Current falling piece -------------------------------------------
         if let Some(cur) = self.current {
-            let cur_attr = cur.color();
-            // Force blue background by creating new Attr with same fg
-            let attr = Attr::new(cur_attr.fg, TvColor::Blue);
+            let attr = Attr::new(cur.ttype.fg(), TvColor::Blue);
             for (x, y) in cur.blocks() {
                 if y >= 0 && y < TETRIS_HEIGHT as i8 && x >= 0 && x < TETRIS_WIDTH as i8 {
-                    let draw_x = start_x + (x as usize) * TETRIS_CELL_W;
-                    let draw_y = start_y + (y as usize) * TETRIS_CELL_H;
-                    if draw_x + 1 < width && draw_y < height {
-                        let mut buf = DrawBuffer::new(width);
-                        buf.move_str(draw_x, "██", attr);
-                        write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + draw_y as i16, &buf);
+                    let dx = start_x + (x as usize) * TETRIS_CELL_W;
+                    let dy = start_y + (y as usize) * TETRIS_CELL_H;
+                    if dx + 1 < width && dy < height {
+                        rows[dy].move_str(dx, "██", attr);
                     }
                 }
             }
         }
 
-        // Draw sidebar background (dialog color) - draw first
-        if info_x + 12 < width {
-            let sidebar_bg_attr = Attr::new(TvColor::White, TvColor::Black);
-            for row in 0..TETRIS_HEIGHT {
-                let y = start_y + row;
-                if y < height {
-                    let mut buf = DrawBuffer::new(width);
-                    buf.move_str(info_x, &" ".repeat(12), sidebar_bg_attr);
-                    write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
-                }
-            }
-        }
-
-        // Draw locked pieces
-        for (row, line) in self.board.iter().enumerate() {
-            for (col, cell) in line.iter().enumerate() {
-                if let Some(ttype) = cell {
-                    let attr = match ttype {
-                        TetrominoType::I => Attr::new(TvColor::LightCyan, TvColor::Blue),
-                        TetrominoType::J => Attr::new(TvColor::LightBlue, TvColor::Blue),
-                        TetrominoType::L => Attr::new(TvColor::Yellow, TvColor::Blue),
-                        TetrominoType::O => Attr::new(TvColor::LightGreen, TvColor::Blue),
-                        TetrominoType::S => Attr::new(TvColor::LightRed, TvColor::Blue),
-                        TetrominoType::T => Attr::new(TvColor::LightMagenta, TvColor::Blue),
-                        TetrominoType::Z => Attr::new(TvColor::White, TvColor::Blue),
-                    };
-                    let x = start_x + col * TETRIS_CELL_W;
-                    let y = start_y + row * TETRIS_CELL_H;
-                    if x + 1 < width && y < height {
-                        let mut buf = DrawBuffer::new(width);
-                        buf.move_str(x, "██", attr);
-                        write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
-                    }
-                }
-            }
-        }
-
-        // Draw sidebar info (to the right of board) - LAST so it's on top
+        // --- Sidebar info: score / level / next piece ------------------------
         if info_x + 12 < width {
             let lines = [
                 format!("Score:{:>5}", self.score),
@@ -1494,12 +1448,10 @@ impl View for TetrisView {
             for (i, line) in lines.iter().enumerate() {
                 let y = start_y + i;
                 if y < height {
-                    let mut buf = DrawBuffer::new(width);
-                    buf.move_str(info_x, line, Attr::new(TvColor::Yellow, TvColor::Black));
-                    write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+                    rows[y].move_str(info_x, line, dialog_bg);
                 }
             }
-            // Draw next piece preview
+            // Next-piece preview on the dialog-colored sidebar
             let preview: [(isize, isize); 4] = match self.next {
                 TetrominoType::I => [(-2, 0), (-1, 0), (0, 0), (1, 0)],
                 TetrominoType::J => [(-1, 0), (-1, -1), (0, 0), (1, 0)],
@@ -1509,47 +1461,41 @@ impl View for TetrisView {
                 TetrominoType::T => [(-1, 0), (0, 0), (1, 0), (0, -1)],
                 TetrominoType::Z => [(-1, 0), (0, 0), (0, -1), (1, -1)],
             };
-            let next_attr = match self.next {
-                TetrominoType::I => Attr::new(TvColor::LightCyan, TvColor::Black),
-                TetrominoType::J => Attr::new(TvColor::LightBlue, TvColor::Black),
-                TetrominoType::L => Attr::new(TvColor::Yellow, TvColor::Black),
-                TetrominoType::O => Attr::new(TvColor::LightGreen, TvColor::Black),
-                TetrominoType::S => Attr::new(TvColor::LightRed, TvColor::Black),
-                TetrominoType::T => Attr::new(TvColor::LightMagenta, TvColor::Black),
-                TetrominoType::Z => Attr::new(TvColor::White, TvColor::Black),
-            };
+            let next_attr = Attr::new(self.next.fg(), TvColor::LightGray);
             for (px, py) in preview {
                 let x = info_x + ((px + 2) as usize) * TETRIS_CELL_W;
                 let y = start_y + 6 + ((-py + 2) as usize) * TETRIS_CELL_H;
                 if x + 1 < width && y < height {
-                    let mut buf = DrawBuffer::new(width);
-                    buf.move_str(x, "██", next_attr);
-                    write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+                    rows[y].move_str(x, "██", next_attr);
                 }
             }
         }
 
-        // Game over overlay
+        // --- Game over overlay ------------------------------------------------
         if self.game_over {
             let msg = "GAME OVER";
             let msg2 = "Press ESC to restart";
             let x = (width.saturating_sub(msg.len())) / 2;
-            let y = height / 2;
+            let x2 = (width.saturating_sub(msg2.len())) / 2;
+            let y = start_y + TETRIS_HEIGHT / 2;
             if y < height {
-                let mut buf = DrawBuffer::new(width);
-                buf.move_str(x, msg, Attr::new(TvColor::LightRed, TvColor::Black));
-                write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+                rows[y].move_char(x, ' ', dialog_bg, msg.len());
+                rows[y].move_str(x, msg, Attr::new(TvColor::LightRed, TvColor::LightGray));
             }
             if y + 1 < height {
-                let x2 = (width.saturating_sub(msg2.len())) / 2;
-                let mut buf = DrawBuffer::new(width);
-                buf.move_str(x2, msg2, Attr::new(TvColor::Yellow, TvColor::Black));
-                write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + (y + 1) as i16, &buf);
+                rows[y + 1].move_char(x2, ' ', dialog_bg, msg2.len());
+                rows[y + 1].move_str(x2, msg2, dialog_bg);
             }
         }
+
+        // --- Flush all rows once ----------------------------------------------
+        for y in 0..height {
+            write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &rows[y]);
+        }
     }
+
     fn handle_event(&mut self, event: &mut Event) {
-        use turbo_vision::core::event::{EventType, KB_LEFT, KB_RIGHT, KB_DOWN, KB_UP, KB_ESC};
+        use turbo_vision::core::event::EventType;
         match event.what {
             EventType::Keyboard => {
                 self.handle_key(event.key_code);
