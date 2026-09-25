@@ -35,7 +35,7 @@ use turbo_vision::views::msgbox::{message_box, MsgBox};
 use turbo_vision::views::status_line::StatusLine;
 use turbo_vision::views::text_viewer::TextViewerBuilder;
 use turbo_vision::views::view::{write_line_to_terminal, View, ViewCore};
-use turbo_vision::views::window::{Window, WindowBuilder};
+use turbo_vision::views::window::{Window, WindowBuilder, WindowPaletteType};
 use turbo_vision::views::scrollbar::ScrollBar;
 
 use crate::api::SharedLog;
@@ -492,6 +492,7 @@ fn open_text_window(ui: &mut Ui, title: &str, text: &str, cascade: i16) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
 
@@ -517,7 +518,11 @@ fn new_certificate_set(ui: &mut Ui) {
         let s = set.lock().expect("set lock");
         s.title.clone()
     };
-    let mut window = Window::new(Rect::new(x, y, x + win_w, y + win_h), &title);
+    let mut window = WindowBuilder::new()
+        .bounds(Rect::new(x, y, x + win_w, y + win_h))
+        .title(&title)
+        .palette_type(WindowPaletteType::Cyan)
+        .build();
     let interior = Rect::new(0, 0, win_w - 2, win_h - 2);
 
     // Create native scrollbars as frame children
@@ -979,12 +984,19 @@ impl View for WinKeyMarker {
 struct ScrollBarWrapper {
     inner: Rc<RefCell<ScrollBar>>,
     core: ViewCore,
+    palette: Option<Palette>,
 }
 
 impl ScrollBarWrapper {
     fn new(inner: Rc<RefCell<ScrollBar>>) -> Self {
         let bounds = inner.borrow().bounds();
-        Self { inner, core: ViewCore::new(bounds) }
+        Self { inner, core: ViewCore::new(bounds), palette: None }
+    }
+
+    /// Set a custom palette for the scrollbar (overrides window frame palette)
+    fn with_palette(mut self, palette: Palette) -> Self {
+        self.palette = Some(palette);
+        self
     }
 }
 
@@ -1012,7 +1024,7 @@ impl View for ScrollBarWrapper {
         false
     }
     fn get_palette(&self) -> Option<Palette> {
-        self.inner.borrow().get_palette()
+        self.palette.clone().or_else(|| self.inner.borrow().get_palette())
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
