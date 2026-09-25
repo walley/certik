@@ -852,8 +852,9 @@ fn show_tetris(ui: &mut Ui) {
 
 fn show_snake(ui: &mut Ui) {
     let (w, h) = ui.app.terminal.size();
-    // Wide enough for the 22-cell LCD field plus the dialog-colored sidebar.
-    let win_w = 40;
+    // Wide enough for the 22-cell LCD field plus the dialog-colored sidebar,
+    // with a margin of blue space on the right of the score panel.
+    let win_w = 44;
     let win_h = 26;
     let x = (w - win_w) / 2;
     let y = (h - win_h) / 2;

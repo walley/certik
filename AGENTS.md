@@ -135,9 +135,11 @@ submenus via `MenuBar::add_submenu(SubMenu::new(...))`. Status items use
 through `CM_SNAKE = 211` (reserved range above `CM_USER`): `CM_ABOUT = 209`,
 `CM_TETRIS = 210`, `CM_SNAKE = 211`. `CM_ABOUT` is defined locally (the
 framework no longer ships one). The games are opened by `show_tetris` /
-`show_snake` in `app.rs`: each builds a **non-resizable** 40x26
-`WindowBuilder` window (`resizable(false)` — a `Dialog` broke
-`add_managed_window(Window)`) and installs its view with `WinKey::next_aux()`.
+`show_snake` in `app.rs`: each builds a **non-resizable** `WindowBuilder`
+window (`resizable(false)` — a `Dialog` broke `add_managed_window(Window)`)
+and installs its view with `WinKey::next_aux()`. Sizes: Tetris 40x26, Snake
+44x26 (wide enough for its board, gap, and score sidebar with a margin of
+window-blue on both sides).
 
 ## API subsystem (`src/api.rs`)
 

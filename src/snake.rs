@@ -26,6 +26,11 @@ const SNAKE_HEIGHT: i16 = 20;
 const BASE_INTERVAL: u32 = 12;
 const MIN_INTERVAL: u32 = 3;
 
+/// Spacing between the LCD board frame and the score sidebar, and the width
+/// of the dialog-colored score panel.
+const GAP: usize = 2;
+const SIDEBAR_WIDTH: usize = 12;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Dir {
     Up,
@@ -203,9 +208,11 @@ impl View for SnakeView {
         let height = self.bounds.height_clamped() as usize;
         let board_w = SNAKE_WIDTH as usize + 2;
         let board_h = SNAKE_HEIGHT as usize + 2;
-        let start_x = (width.saturating_sub(board_w + 14)) / 2; // reserve sidebar space
+        // Center the board + gap + side panel block, leaving a visible margin
+        // of app blue on both sides of the window.
+        let start_x = (width.saturating_sub(board_w + GAP + SIDEBAR_WIDTH)) / 2;
         let start_y = (height.saturating_sub(board_h)) / 2;
-        let info_x = start_x + board_w + 2;
+        let info_x = start_x + board_w + GAP;
 
         // One buffer per row; stamp everything, flush once.
         let mut rows: Vec<DrawBuffer> = (0..height).map(|_| DrawBuffer::new(width)).collect();
@@ -226,11 +233,11 @@ impl View for SnakeView {
 
         // --- Sidebar background: dialog color (black on light gray) --------
         let dialog_bg = colors::DIALOG_NORMAL;
-        if info_x + 12 <= width {
+        if info_x + SIDEBAR_WIDTH <= width {
             for fy in 0..SNAKE_HEIGHT {
                 let y = start_y + 1 + fy as usize;
                 if y < height {
-                    rows[y].move_str(info_x, &" ".repeat(12), dialog_bg);
+                    rows[y].move_str(info_x, &" ".repeat(SIDEBAR_WIDTH), dialog_bg);
                 }
             }
         }
@@ -288,7 +295,7 @@ impl View for SnakeView {
         }
 
         // --- Sidebar info ----------------------------------------------------
-        if info_x + 12 <= width {
+        if info_x + SIDEBAR_WIDTH <= width {
             let lines = [
                 format!("Score:{:>5}", self.score),
                 format!("Length:{:>4}", self.snake.len()),
