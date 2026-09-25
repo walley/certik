@@ -1048,7 +1048,7 @@ struct CertSetView {
 
 impl CertSetView {
     fn new(bounds: Rect, set: Arc<Mutex<CertSet>>, scrollbars: CertScrollBars) -> Self {
-        Self {
+        let mut this = Self {
             bounds,
             core: ViewCore::new(bounds),
             set,
@@ -1056,7 +1056,10 @@ impl CertSetView {
             seen_version: u64::MAX,
             cached_lines: Vec::new(),
             grow_mode: Grow::HI_X | Grow::HI_Y,
-        }
+        };
+        // Initialize scrollbar params immediately
+        this.update_scrollbar_params();
+        this
     }
 
     fn refresh_if_needed(&mut self) {
@@ -1069,6 +1072,8 @@ impl CertSetView {
             // Update scrollbar parameters after content change
             self.update_scrollbar_params();
         }
+        // Also update params if bounds changed (resize)
+        self.update_scrollbar_params();
     }
 
     fn update_scrollbar_params(&mut self) {
