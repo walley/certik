@@ -17,6 +17,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use rand::rngs::ThreadRng;
+use rand::Rng;
+
 use turbo_vision::app::Application;
 use turbo_vision::core::command::{CommandId, CM_CASCADE, CM_COPY, CM_CUT, CM_PASTE, CM_QUIT, CM_REDO, CM_TILE, CM_UNDO};
 use turbo_vision::core::draw::DrawBuffer;
@@ -836,6 +839,7 @@ fn show_tetris(ui: &mut Ui) {
     let mut window = WindowBuilder::new()
         .bounds(Rect::new(x, y, x + win_w, y + win_h))
         .title("Tetris")
+        .resizable(false)
         .build();
 
     let interior = Rect::new(0, 0, win_w - 2, win_h - 2);
@@ -1116,11 +1120,11 @@ struct TetrisView {
     game_over: bool,
     tick_timer: u32,
     grow_mode: GrowFlags,
+    rng: ThreadRng,
 }
 
 impl TetrisView {
     fn new(bounds: Rect) -> Self {
-        use rand::Rng;
         let mut rng = rand::thread_rng();
         let next = Self::random_type(&mut rng);
         let mut view = Self {
@@ -1135,6 +1139,7 @@ impl TetrisView {
             game_over: false,
             tick_timer: 0,
             grow_mode: GrowFlags::empty(),
+            rng,
         };
         view.spawn_piece();
         view
@@ -1153,10 +1158,8 @@ impl TetrisView {
     }
 
     fn spawn_piece(&mut self) {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
         self.current = Some(Tetromino::new(self.next));
-        self.next = Self::random_type(&mut rng);
+        self.next = Self::random_type(&mut self.rng);
         // Check game over
         if let Some(cur) = self.current {
             for (x, y) in cur.blocks() {
@@ -1329,15 +1332,26 @@ impl View for TetrisView {
         let height = self.bounds.height_clamped() as usize;
         let board_w = TETRIS_WIDTH * TETRIS_CELL_W;
         let board_h = TETRIS_HEIGHT * TETRIS_CELL_H;
-        let start_x = (width.saturating_sub(board_w)) / 2;
+        let start_x = (width.saturating_sub(board_w + 14)) / 2; // Reserve space for sidebar
         let start_y = (height.saturating_sub(board_h)) / 2;
 
-        // Clear background
+        // Clear entire window with dialog background
         for y in 0..height {
             let blank = " ".repeat(width);
             let mut buf = DrawBuffer::new(width);
             buf.move_str(0, &blank, colors::NORMAL);
             write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+        }
+
+        // Draw board background (black)
+        let bg_attr = Attr::new(TvColor::Black, TvColor::Black);
+        for row in 0..TETRIS_HEIGHT {
+            let y = start_y + row;
+            if y < height {
+                let mut buf = DrawBuffer::new(width);
+                buf.move_str(start_x, &"  ".repeat(TETRIS_WIDTH), bg_attr);
+                write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+            }
         }
 
         // Draw board border
@@ -1402,13 +1416,13 @@ impl View for TetrisView {
             }
         }
 
-        // Draw sidebar info
-        let info_x = start_x + board_w + 3;
-        if info_x < width {
+        // Draw sidebar info (to the right of board)
+        let info_x = start_x + board_w + 2;
+        if info_x + 12 < width {
             let lines = [
-                format!("Score: {}", self.score),
-                format!("Lines: {}", self.lines),
-                format!("Level: {}", self.level),
+                format!("Score:{:>5}", self.score),
+                format!("Lines:{:>5}", self.lines),
+                format!("Level:{:>5}", self.level),
                 String::new(),
                 "Next:".to_string(),
             ];
