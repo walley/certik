@@ -1109,8 +1109,11 @@ impl Tetromino {
 
     fn moved(&self, dx: i8, dy: i8) -> Self {
         let mut t = *self;
-        t.x = (t.x + dx).clamp(-2, (TETRIS_WIDTH - 2) as i8);
-        t.y = t.y + dy;
+        // No clamp here: can_place() validates that every block of the new
+        // position stays inside the well, which lets pieces with narrow
+        // rotations (e.g. a vertical I) reach the rightmost column.
+        t.x += dx;
+        t.y += dy;
         t
     }
 }
