@@ -1242,10 +1242,23 @@ impl View for CertSetView {
                 }
                 _ => {}
             }
-            EventType::MouseWheelUp | EventType::MouseWheelDown => {
-                // Mouse wheel handled by scrollbars (frame children)
-                // But we can also handle it here for the interior
-                event.clear();
+            EventType::MouseWheelUp => {
+                if let Ok(mut v) = self.scrollbars.v_scroll.try_borrow_mut() {
+                    let val = v.get_value();
+                    if val > 0 {
+                        v.set_value(val - 3);
+                        event.clear();
+                    }
+                }
+            }
+            EventType::MouseWheelDown => {
+                if let Ok(mut v) = self.scrollbars.v_scroll.try_borrow_mut() {
+                    let val = v.get_value();
+                    if val < max_v_offset as i32 {
+                        v.set_value(val + 3);
+                        event.clear();
+                    }
+                }
             }
             _ => {}
         }
