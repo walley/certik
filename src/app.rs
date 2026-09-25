@@ -989,29 +989,14 @@ impl View for CertSetView {
 
         // Draw content - use the full interior width
         for (row, line) in self.cached_lines[start..end].iter().enumerate() {
-            let x_offset = self.h_offset;
-            if x_offset > 0 {
-                // Shift line left by x_offset columns
-                let shifted_line: String = line.chars().skip(x_offset as usize).collect();
-                if !shifted_line.is_empty() {
-                    draw_colored_line(
-                        terminal,
-                        self.bounds,
-                        row,
-                        &shifted_line,
-                        width
-                    );
-                }
-            } else {
-                // No horizontal scroll - draw normally
-                draw_colored_line(
-                    terminal,
-                    self.bounds,
-                    row,
-                    line,
-                    width
-                );
-            }
+            draw_colored_line(
+                terminal,
+                self.bounds,
+                row,
+                line,
+                width,
+                self.h_offset,
+            );
         }
     }
 
@@ -1046,8 +1031,16 @@ impl View for CertSetView {
                     }
                 }
                 KB_RIGHT => {
-                    self.h_offset += 1;
-                    event.clear();
+                    let width = self.bounds.width_clamped() as usize;
+                    let max_h_offset = self.cached_lines.iter()
+                        .map(|l| l.chars().count())
+                        .max()
+                        .unwrap_or(0)
+                        .saturating_sub(width);
+                    if self.h_offset < max_h_offset {
+                        self.h_offset += 1;
+                        event.clear();
+                    }
                 }
                 _ => {}
             }
@@ -1111,98 +1104,98 @@ const CT_STATUS: Attr = Attr::new(TvColor::LightGreen,  TvColor::Blue);
 const CT_CN:     Attr = Attr::new(TvColor::LightMagenta, TvColor::Blue);
 
 /// Render a single line from CertSetView's cached output with syntax coloring.
-fn draw_colored_line(terminal: &mut Terminal, bounds: Rect, row: usize, line: &str, width: usize) {
+fn draw_colored_line(terminal: &mut Terminal, bounds: Rect, row: usize, line: &str, width: usize, h_offset: usize) {
     let trimmed = line.trim_end();
+
+    // If the visible window is empty, just fill with spaces
+    if width == 0 {
+        return;
+    }
+
+    // We need to compute highlights on the FULL line (not truncated to visible width),
+    // then render only the visible window [h_offset, h_offset + width).
+    // Build the full padded line that covers the visible window.
+    let full_width = (trimmed.chars().count()).max(h_offset + width);
+    let full_padded = format!("{trimmed:<full_width$}");
+
+    // Collect all highlight spans as (start, end, attr) on the full_padded string.
+    // Later we'll render only the visible slice.
+    let mut highlights: Vec<(usize, usize, Attr)> = Vec::new();
+
+    // Helper to add a highlight span (clipped to full_padded bounds)
+    let mut add_hl = |start: usize, end: usize, attr: Attr| {
+        if start < full_padded.len() && end > start {
+            let end = end.min(full_padded.len());
+            highlights.push((start, end, attr));
+        }
+    };
 
     // Pure separator lines: "===...===" or "---...---"
     if !trimmed.is_empty()
         && trimmed.bytes().all(|b| b == b'=' || b == b'-')
     {
-        let padded = format!("{trimmed:<width$}");
-        let mut buf = DrawBuffer::new(width);
-        buf.move_str(0, &padded, CT_SEP);
-        write_line_to_terminal(terminal, bounds.a.x, bounds.a.y + row as i16, &buf);
-        return;
+        add_hl(0, full_width, CT_SEP);
     }
-
     // Section headers
-    let is_header = trimmed.starts_with("LEAF CERTIFICATE")
+    else if trimmed.starts_with("LEAF CERTIFICATE")
         || trimmed.starts_with("INTERMEDIATE")
         || trimmed.starts_with("PRIVATE KEY")
-        || trimmed.starts_with("VERIFICATION");
-    if is_header {
-        let padded = format!("{trimmed:<width$}");
-        let mut buf = DrawBuffer::new(width);
-        buf.move_str(0, &padded, CT_HDR);
-        write_line_to_terminal(terminal, bounds.a.x, bounds.a.y + row as i16, &buf);
-        return;
+        || trimmed.starts_with("VERIFICATION")
+    {
+        add_hl(0, full_width, CT_HDR);
     }
-
-    // Title line (contains "[cert ...]" / "[key ...]" or "[intermediate(s): ...]")
-    if trimmed.contains("[cert ") || trimmed.contains("[key ") {
-        let padded = format!("{trimmed:<width$}");
-        let mut buf = DrawBuffer::new(width);
-        // Write the whole line, then overlay status tags in green
-        buf.move_str(0, &padded, CT_LABEL);
+    // Title line (contains "[cert ...]" / "[key ...]" / "[intermediate(s): ...]")
+    else if trimmed.contains("[cert ") || trimmed.contains("[key ") || trimmed.contains("[intermediate") {
+        // Base attribute for the whole line
+        add_hl(0, full_width, CT_LABEL);
+        // Overlay status tags
         for (tag, attr) in [
             ("[cert OK]",     CT_STATUS),
             ("[key OK]",      CT_STATUS),
             ("[cert --]",     CT_SEP),
             ("[key --]",      CT_SEP),
+            ("[intermediate(s):", CT_LABEL),
         ] {
-            if let Some(start) = padded.find(tag) {
-                buf.move_str(start, tag, attr);
+            if let Some(start) = full_padded.find(tag) {
+                add_hl(start, start + tag.len(), attr);
             }
         }
-        write_line_to_terminal(terminal, bounds.a.x, bounds.a.y + row as i16, &buf);
-        return;
     }
-
     // Empty lines
-    if trimmed.is_empty() {
-        let padded = " ".repeat(width).to_string();
-        let mut buf = DrawBuffer::new(width);
-        buf.move_str(0, &padded, colors::NORMAL);
-        write_line_to_terminal(terminal, bounds.a.x, bounds.a.y + row as i16, &buf);
-        return;
+    else if trimmed.is_empty() {
+        add_hl(0, full_width, colors::NORMAL);
     }
+    // Regular content lines
+    else {
+        // Base attribute
+        add_hl(0, full_width, colors::NORMAL);
 
-    // Regular content lines: detect embedded dates and days-remaining.
-    let mut buf = DrawBuffer::new(width);
-    let padded = format!("{trimmed:<width$}");
-    buf.move_str(0, &padded, colors::NORMAL);
-
-    // Highlight date labels and their date values.
-    // "Not before", "Not after", "Valid from", "Valid to" variants.
-    for label in ["Not before ", "Not before:", "Not after ", "Not after:",
-                   "Not valid before ", "Not valid before:",
-                   "Valid from ", "Valid from:", "Valid to ", "Valid to:"] {
-        if let Some(start) = padded.find(label) {
-            let colon = padded[start..].find(':').map(|i| start + i + 1).unwrap_or(start + label.len());
-            let full_label = &padded[start..colon];
-            buf.move_str(start, full_label, CT_LABEL);
-            let val_start = colon;
-            let rest = &padded[val_start..];
-            let val_len = rest.find('(').or_else(|| rest.find('\n')).unwrap_or(rest.len());
-            let val = rest[..val_len].trim_start().trim_end();
-            if !val.is_empty() {
-                let leading = rest.len() - rest.trim_start().len();
-                buf.move_str(val_start + leading, val, CT_DATE);
+        // Highlight date labels and their date values.
+        for label in ["Not before ", "Not before:", "Not after ", "Not after:",
+                       "Not valid before ", "Not valid before:",
+                       "Valid from ", "Valid from:", "Valid to ", "Valid to:"] {
+            if let Some(start) = full_padded.find(label) {
+                let colon = full_padded[start..].find(':').map(|i| start + i + 1).unwrap_or(start + label.len());
+                let _full_label = &full_padded[start..colon];
+                add_hl(start, colon, CT_LABEL);
+                let val_start = colon;
+                let rest = &full_padded[val_start..];
+                let val_len = rest.find('(').or_else(|| rest.find('\n')).unwrap_or(rest.len());
+                let val = rest[..val_len].trim_start().trim_end();
+                if !val.is_empty() {
+                    let leading = rest.len() - rest.trim_start().len();
+                    add_hl(val_start + leading, val_start + leading + val.chars().count(), CT_DATE);
+                }
             }
         }
-    }
 
-    // Highlight days-remaining: "(N day(s) remaining)" or "(N day(s) until ...)"
-    // or expired variant "(-N day(s) remaining)" / "(expired N day(s) ago)".
-    let open = padded.find("(N day");
-    if open.is_none() {
-        // Try the actual rendered form with a number
+        // Highlight days-remaining: "(N day(s) remaining)" or "(N day(s) until ...)"
+        // or expired variant "(-N day(s) remaining)" / "(expired N day(s) ago)".
         let mut search_from = 0;
-        while search_from < padded.len() {
-            if let Some(slice_start) = padded[search_from..].find('(') {
+        while search_from < full_padded.len() {
+            if let Some(slice_start) = full_padded[search_from..].find('(') {
                 let abs_start = search_from + slice_start;
-                let rest = &padded[abs_start + 1..];
-                // Check for digit sequence followed by " day(s) remaining)" or " day(s) ago)"
+                let rest = &full_padded[abs_start + 1..];
                 if let Some(digit_end) = rest.find(|c: char| !c.is_ascii_digit()) {
                     if digit_end > 0 {
                         let after_digits = &rest[digit_end..];
@@ -1219,9 +1212,9 @@ fn draw_colored_line(terminal: &mut Terminal, bounds: Rect, row: usize, line: &s
                         if let Some(total_end_offset) = suffix {
                             let total_start = abs_start;
                             let total_end = abs_start + 1 + digit_end + total_end_offset;
-                            let segment = &padded[total_start..total_end];
+                            let segment = &full_padded[total_start..total_end];
                             let is_bad = segment.contains('-') || segment.contains("expired");
-                            buf.move_str(total_start, segment, if is_bad { CT_DAYS_BAD } else { CT_DAYS });
+                            add_hl(total_start, total_end, if is_bad { CT_DAYS_BAD } else { CT_DAYS });
                             search_from = total_end;
                             continue;
                         }
@@ -1232,54 +1225,109 @@ fn draw_colored_line(terminal: &mut Terminal, bounds: Rect, row: usize, line: &s
                 break;
             }
         }
-    }
 
-    // Highlight path-like values inside "(...)" after section headers.
-    for label in ["LEAF CERTIFICATE  (", "INTERMEDIATE #", "PRIVATE KEY  ("] {
-        if let Some(start) = padded.find(label) {
-            let after = &padded[start + label.len()..];
-            if let Some(close) = after.find(')') {
-                let path_start = start + label.len();
-                buf.move_str(path_start, &after[..close], CT_PATH);
+        // Highlight path-like values inside "(...)" after section headers.
+        for label in ["LEAF CERTIFICATE  (", "INTERMEDIATE #", "PRIVATE KEY  ("] {
+            if let Some(start) = full_padded.find(label) {
+                let after = &full_padded[start + label.len()..];
+                if let Some(close) = after.find(')') {
+                    let path_start = start + label.len();
+                    add_hl(path_start, path_start + close, CT_PATH);
+                }
             }
+        }
+
+        // Highlight field labels at line start (after indentation).
+        for keyword in ["Subject", "Issuer", "Serial", "SHA-256", "SHA-256*",
+                         "SHA-384", "SHA-512", "Signature Algorithm",
+                         "Sig algo", "Pub key", "SANs", "Extensions",
+                         "RSA modulus", "RSA pub exp", "Algorithm", "Format",
+                         "Version", "RSA modulus"] {
+            if let Some(start) = full_padded.find(keyword) {
+                let rest = &full_padded[start..];
+                if let Some(colon_off) = rest.find(':') {
+                    let full = &rest[..colon_off + 1];
+                    add_hl(start, start + full.chars().count(), CT_LABEL);
+                }
+            }
+        }
+
+        // Highlight CN= values everywhere (Subject, Issuer, verification lines, etc.)
+        let mut cn_search = 0;
+        while cn_search < full_padded.len() {
+            if let Some(pos) = full_padded[cn_search..].find("CN=") {
+                let abs = cn_search + pos;
+                let val_end = full_padded[abs + 3..].find([',', ';', ']', '\n'])
+                    .map(|e| abs + 3 + e)
+                    .unwrap_or(full_padded.len());
+                add_hl(abs, val_end, CT_CN);
+                cn_search = val_end;
+            } else {
+                break;
+            }
+        }
+
+        // Plain "pending..." line
+        if trimmed == "pending..." {
+            add_hl(0, trimmed.chars().count(), CT_SEP);
         }
     }
 
-    // Highlight field labels at line start (after indentation).
-    // The field() format pads names to 11 chars: "Subject    :" or "Issuer     :".
-    for keyword in ["Subject", "Issuer", "Serial", "SHA-256", "SHA-256*",
-                     "SHA-384", "SHA-512", "Signature Algorithm",
-                     "Sig algo", "Pub key", "SANs", "Extensions",
-                     "RSA modulus", "RSA pub exp", "Algorithm", "Format",
-                     "Version", "RSA modulus"] {
-        if let Some(start) = padded.find(keyword) {
-            // Find the colon after the keyword (may have padding spaces).
-            let rest = &padded[start..];
-            if let Some(colon_off) = rest.find(':') {
-                let full = &rest[..colon_off + 1];
-                buf.move_str(start, full, CT_LABEL);
-            }
-        }
-    }
+    // Sort highlights by start position for efficient rendering
+    highlights.sort_by_key(|h| h.0);
 
-    // Highlight CN= values everywhere (Subject, Issuer, verification lines, etc.)
-    let mut cn_search = 0;
-    while cn_search < padded.len() {
-        if let Some(pos) = padded[cn_search..].find("CN=") {
-            let abs = cn_search + pos;
-            let val_end = padded[abs + 3..].find([',', ';', ']', '\n'])
-                .map(|e| abs + 3 + e)
-                .unwrap_or(padded.len());
-            buf.move_str(abs, &padded[abs..val_end], CT_CN);
-            cn_search = val_end;
-        } else {
+    // Now render only the visible window [h_offset, h_offset + width)
+    let mut buf = DrawBuffer::new(width);
+    let visible_start = h_offset;
+    let visible_end = (h_offset + width).min(full_padded.len());
+
+    // We'll iterate through the visible character positions and determine
+    // the attribute for each position based on the highlights.
+    // For simplicity, we'll write spans that fall within the visible window.
+    let mut last_pos = visible_start;
+    for (hl_start, hl_end, attr) in &highlights {
+        let hl_start = *hl_start;
+        let hl_end = *hl_end;
+        // Skip highlights entirely before the visible window
+        if hl_end <= visible_start {
+            continue;
+        }
+        // Stop if highlight starts after visible window
+        if hl_start >= visible_end {
             break;
         }
+        // Compute the overlap with visible window
+        let overlap_start = hl_start.max(visible_start);
+        let overlap_end = hl_end.min(visible_end);
+        if overlap_start > overlap_end {
+            continue;
+        }
+        // Fill gap before this highlight with NORMAL
+        if overlap_start > last_pos {
+            let gap_str: String = full_padded.chars().skip(last_pos).take(overlap_start - last_pos).collect();
+            if !gap_str.is_empty() {
+                buf.move_str(last_pos - visible_start, &gap_str, colors::NORMAL);
+            }
+        }
+        // Write the highlighted span
+        let hl_str: String = full_padded.chars().skip(overlap_start).take(overlap_end - overlap_start).collect();
+        if !hl_str.is_empty() {
+            buf.move_str(overlap_start - visible_start, &hl_str, *attr);
+        }
+        last_pos = overlap_end;
     }
-
-    // Plain "pending..." line
-    if trimmed == "pending..." {
-        buf.move_str(0, trimmed, CT_SEP);
+    // Fill any remaining gap to the end of visible window
+    if last_pos < visible_end {
+        let gap_str: String = full_padded.chars().skip(last_pos).take(visible_end - last_pos).collect();
+        if !gap_str.is_empty() {
+            buf.move_str(last_pos - visible_start, &gap_str, colors::NORMAL);
+        }
+    }
+    // If visible window extends beyond full_padded, pad with spaces
+    if visible_end < h_offset + width {
+        let pad_len = h_offset + width - visible_end;
+        let pad_str = " ".repeat(pad_len);
+        buf.move_str(visible_end - visible_start, &pad_str, colors::NORMAL);
     }
 
     write_line_to_terminal(terminal, bounds.a.x, bounds.a.y + row as i16, &buf);

@@ -68,7 +68,12 @@ Four custom views implement `turbo_vision::views::View`:
 
 - `ServerLogView` — renders the shared API log, top-down scrolling.
 - `CertSetView` — renders a certificate set from shared state with syntax
-  coloring; owns a vertical `ScrollBar`.
+  coloring; owns a vertical `ScrollBar`. Supports **horizontal scrolling**
+  via `KB_LEFT`/`KB_RIGHT` (`h_offset` field). The horizontal scroll range is
+  computed from the longest cached line minus the visible width. Color highlights
+  are computed on the **full line** first (padded to cover the visible window),
+  then only the visible slice `[h_offset, h_offset + width)` is rendered — this
+  preserves syntax colors when scrolling horizontally.
 - `SharedScrollBar` — a thin wrapper letting a native `ScrollBar` act as a
   Window **frame child** (the framework's own `EditWindow::SharedScrollBar` is
   private). It shares the `ScrollBar` via `Rc<RefCell<ScrollBar>>` with its
