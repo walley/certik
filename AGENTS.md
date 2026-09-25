@@ -68,16 +68,16 @@ Four custom views implement `turbo_vision::views::View`:
 
 - `ServerLogView` — renders the shared API log, top-down scrolling.
 - `CertSetView` — renders a certificate set from shared state with syntax
-  coloring; owns a vertical `ScrollBar`. Supports **horizontal scrolling**
-  via `KB_LEFT`/`KB_RIGHT` (`h_offset` field). The horizontal scroll range is
+  coloring. Uses **native turbo-vision ScrollBars** as window frame children
+  (vertical on right, horizontal on bottom). Supports **horizontal scrolling**
+  via `KB_LEFT`/`KB_RIGHT`. The horizontal scroll range is
   computed from the longest cached line minus the visible width. Color highlights
   are computed on the **full line** first (padded to cover the visible window),
   then only the visible slice `[h_offset, h_offset + width)` is rendered — this
-  preserves syntax colors when scrolling horizontally.
-- `SharedScrollBar` — a thin wrapper letting a native `ScrollBar` act as a
-  Window **frame child** (the framework's own `EditWindow::SharedScrollBar` is
-  private). It shares the `ScrollBar` via `Rc<RefCell<ScrollBar>>` with its
-  `CertSetView`.
+  preserves syntax colors when scrolling horizontally. Scroll position is read
+  from the native scrollbars at draw time (scrollbars are the source of truth).
+- `ScrollBarWrapper` — wraps `Rc<RefCell<ScrollBar>>` to implement `View` so
+  native scrollbars can be added as frame children via `Window::add_frame_child`.
 - `WinKeyMarker` — invisible/inert marker tying a window to its `WinKey`.
 
 **View trait requirements** (important): each custom view must provide `core()`
@@ -92,14 +92,17 @@ needed.
 framework never sends events to frame children (only `frame` and `interior`),
 so certik:
 
+- creates vertical/horizontal `ScrollBar` instances wrapped in `ScrollBarWrapper`
+  and adds them as frame children in `new_certificate_set`;
 - routes mouse events over a scrollbar to it directly in the main loop
   (`route_scrollbar_mouse`) before the framework sees them;
 - repositions each window's border scrollbar every frame in `sync_scrollbars`
   because `Window::set_bounds` does not move frame children on resize.
 
-`CertSetView` pulls its scroll position from the shared `ScrollBar` at draw
+`CertSetView` pulls its scroll position from the native scrollbars at draw
 time (the scrollbar is the source of truth, since mouse clicks change it
-directly). Mouse wheel is handled in the view (the framework ScrollBar doesn't).
+directly). Keyboard scrolling (arrow keys) updates the scrollbar values.
+Mouse wheel is handled by the view for the interior.
 
 ### Window maximize / minimize (shade)
 

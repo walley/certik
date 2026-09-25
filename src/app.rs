@@ -9,9 +9,11 @@
 //!     the active window via File > Open Certificate / Intermediate / Key.
 //!     Once a set is complete its chain/key/validity is verified automatically.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -34,6 +36,7 @@ use turbo_vision::views::status_line::StatusLine;
 use turbo_vision::views::text_viewer::TextViewerBuilder;
 use turbo_vision::views::view::{write_line_to_terminal, View, ViewCore};
 use turbo_vision::views::window::{Window, WindowBuilder};
+use turbo_vision::views::scrollbar::ScrollBar;
 
 use crate::api::SharedLog;
 use crate::api;
@@ -234,6 +237,8 @@ fn main_loop(ui: &mut Ui) {
     while ui.app.running {
         if let Some(mut event) = ui.app.get_event() {
 
+            // Route mouse events to border scrollbars before framework handles them
+            route_scrollbar_mouse(ui, &mut event);
 
             ui.app.handle_event(&mut event);
 
@@ -259,7 +264,37 @@ fn main_loop(ui: &mut Ui) {
             ui.app.desktop.remove_closed_windows();
         }
 
+        sync_scrollbars(ui);
         sync_focus(ui);
+    }
+}
+
+fn sync_focus(ui: &mut Ui) {
+    let id = active_set(ui).map(|s| s.lock().map(|st| st.id).unwrap_or(api::NO_FOCUS)).unwrap_or(api::NO_FOCUS);
+    ui.focus.store(id, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Reposition border scrollbars for certificate set windows after resize.
+/// Frame children are not automatically moved by Window::set_bounds.
+fn sync_scrollbars(ui: &mut Ui) {
+    let d = &mut ui.app.desktop;
+    for i in 0..d.child_count() {
+        let view = d.child_at_mut(i);
+        if let Some(win) = view.as_any_mut().downcast_mut::<Window>() {
+            if let Some(WinKey::Set(_)) = window_key(win) {
+                let bounds = win.bounds();
+                let win_w = bounds.width();
+                let win_h = bounds.height();
+                if win_w < 4 || win_h < 4 {
+                    continue;
+                }
+                // Frame children: [0] = vertical, [1] = horizontal (as added in new_certificate_set)
+                // Vertical: right edge, y=1..win_h-1
+                win.update_frame_child(0, Rect::new(win_w - 1, 1, win_w, win_h - 1));
+                // Horizontal: bottom edge, x=1..win_w-1
+                win.update_frame_child(1, Rect::new(1, win_h - 1, win_w - 1, win_h));
+            }
+        }
     }
 }
 
@@ -270,9 +305,41 @@ fn main_loop(ui: &mut Ui) {
 /// events). A mouse click on the scrollbar would otherwise fall through and
 /// be dropped. Here we forward MouseDown/MouseMove/MouseUp over a scrollbar to
 /// the scrollbar itself (which handles arrow clicks, page jumps, and thumb
-fn sync_focus(ui: &mut Ui) {
-    let id = active_set(ui).map(|s| s.lock().map(|st| st.id).unwrap_or(api::NO_FOCUS)).unwrap_or(api::NO_FOCUS);
-    ui.focus.store(id, std::sync::atomic::Ordering::SeqCst);
+/// dragging).
+fn route_scrollbar_mouse(ui: &mut Ui, event: &mut Event) {
+    if !matches!(event.what, EventType::MouseDown | EventType::MouseMove | EventType::MouseUp) {
+        return;
+    }
+    let d = &mut ui.app.desktop;
+    for i in 0..d.child_count() {
+        let view = d.child_at_mut(i);
+        if let Some(win) = view.as_any_mut().downcast_mut::<Window>() {
+            if !matches!(window_key(win), Some(WinKey::Set(_))) {
+                continue;
+            }
+            let win_bounds = win.bounds(); // Get bounds before mutable borrow of frame children
+            // Check frame children (scrollbars)
+            for fc_idx in 0..2 {
+                if let Some(fc) = win.get_frame_child_mut(fc_idx) {
+                    let fc_bounds = fc.bounds();
+                    // Convert mouse position to window-relative
+                    let mx = event.mouse.pos.x - win_bounds.a.x;
+                    let my = event.mouse.pos.y - win_bounds.a.y;
+                    if mx >= fc_bounds.a.x && mx < fc_bounds.b.x && my >= fc_bounds.a.y && my < fc_bounds.b.y {
+                        // Forward event to scrollbar (convert to scrollbar-local coords)
+                        let mut local_event = event.clone();
+                        local_event.mouse.pos.x = mx - fc_bounds.a.x;
+                        local_event.mouse.pos.y = my - fc_bounds.a.y;
+                        fc.handle_event(&mut local_event);
+                        if local_event.what == EventType::Nothing {
+                            event.clear();
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -453,7 +520,21 @@ fn new_certificate_set(ui: &mut Ui) {
     let mut window = Window::new(Rect::new(x, y, x + win_w, y + win_h), &title);
     let interior = Rect::new(0, 0, win_w - 2, win_h - 2);
 
-    window.add(Box::new(CertSetView::new(interior, Arc::clone(&set))));
+    // Create native scrollbars as frame children
+    // Vertical scrollbar: right edge, below title bar (y=1), above bottom border
+    let v_scroll = Rc::new(RefCell::new(ScrollBar::new_vertical(Rect::new(
+        win_w - 1, 1, win_w, win_h - 1,
+    ))));
+    window.add_frame_child(Box::new(ScrollBarWrapper::new(Rc::clone(&v_scroll))));
+
+    // Horizontal scrollbar: bottom edge, right of left border, left of right border
+    let h_scroll = Rc::new(RefCell::new(ScrollBar::new_horizontal(Rect::new(
+        1, win_h - 1, win_w - 1, win_h,
+    ))));
+    window.add_frame_child(Box::new(ScrollBarWrapper::new(Rc::clone(&h_scroll))));
+
+    let scrollbars = CertScrollBars { v_scroll, h_scroll };
+    window.add(Box::new(CertSetView::new(interior, Arc::clone(&set), scrollbars)));
     let key = WinKey::Set(id);
     add_managed_window(ui, window, key);
 }
@@ -894,6 +975,63 @@ impl View for WinKeyMarker {
 }
 
 
+// Wrapper to make Rc<RefCell<ScrollBar>> into a View for frame children
+struct ScrollBarWrapper {
+    inner: Rc<RefCell<ScrollBar>>,
+    core: ViewCore,
+}
+
+impl ScrollBarWrapper {
+    fn new(inner: Rc<RefCell<ScrollBar>>) -> Self {
+        let bounds = inner.borrow().bounds();
+        Self { inner, core: ViewCore::new(bounds) }
+    }
+}
+
+impl View for ScrollBarWrapper {
+    fn core(&self) -> &ViewCore {
+        &self.core
+    }
+    fn core_mut(&mut self) -> &mut ViewCore {
+        &mut self.core
+    }
+    fn bounds(&self) -> Rect {
+        self.inner.borrow().bounds()
+    }
+    fn set_bounds(&mut self, bounds: Rect) {
+        self.core.bounds = bounds;
+        self.inner.borrow_mut().set_bounds(bounds);
+    }
+    fn draw(&mut self, terminal: &mut Terminal) {
+        self.inner.borrow_mut().draw(terminal);
+    }
+    fn handle_event(&mut self, event: &mut Event) {
+        self.inner.borrow_mut().handle_event(event);
+    }
+    fn can_focus(&self) -> bool {
+        false
+    }
+    fn get_palette(&self) -> Option<Palette> {
+        self.inner.borrow().get_palette()
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn grow_mode(&self) -> GrowFlags {
+        GrowFlags::empty()
+    }
+    fn set_grow_mode(&mut self, _grow_mode: GrowFlags) {}
+}
+
+// Shared scrollbars for CertSetView (vertical and horizontal)
+struct CertScrollBars {
+    v_scroll: Rc<RefCell<ScrollBar>>,
+    h_scroll: Rc<RefCell<ScrollBar>>,
+}
+
 // ---------------------------------------------------------------------------
 // CertSetView - renders a certificate set from shared state
 // ---------------------------------------------------------------------------
@@ -902,21 +1040,19 @@ struct CertSetView {
     bounds: Rect,
     core: ViewCore,
     set: Arc<Mutex<CertSet>>,
-    offset: usize,
-    h_offset: usize,
+    scrollbars: CertScrollBars,
     seen_version: u64,
     cached_lines: Vec<String>,
     grow_mode: GrowFlags,
 }
 
 impl CertSetView {
-    fn new(bounds: Rect, set: Arc<Mutex<CertSet>>) -> Self {
+    fn new(bounds: Rect, set: Arc<Mutex<CertSet>>, scrollbars: CertScrollBars) -> Self {
         Self {
             bounds,
             core: ViewCore::new(bounds),
             set,
-            offset: 0,
-            h_offset: 0,
+            scrollbars,
             seen_version: u64::MAX,
             cached_lines: Vec::new(),
             grow_mode: Grow::HI_X | Grow::HI_Y,
@@ -929,12 +1065,58 @@ impl CertSetView {
             if let Ok(s) = self.set.lock() {
                 self.cached_lines = s.render();
                 self.seen_version = s.version;
-                let max_off = self.cached_lines.len().saturating_sub(1);
-                if self.offset > max_off {
-                    self.offset = max_off;
-                }
             }
+            // Update scrollbar parameters after content change
+            self.update_scrollbar_params();
         }
+    }
+
+    fn update_scrollbar_params(&mut self) {
+        let total_lines = self.cached_lines.len() as i32;
+        let width = self.bounds.width_clamped() as i32;
+        let height = self.bounds.height_clamped() as i32;
+
+        // Max line length for horizontal scroll
+        let max_line_len = self.cached_lines.iter()
+            .map(|l| l.chars().count() as i32)
+            .max()
+            .unwrap_or(0);
+
+        // Vertical scrollbar
+        if let Ok(mut v) = self.scrollbars.v_scroll.try_borrow_mut() {
+            let cur_val = v.get_value();
+            let page = height.max(1);
+            v.set_params(
+                cur_val,
+                0,
+                (total_lines - page).max(0),
+                page - 1,
+                1,
+            );
+            v.set_total(total_lines);
+        }
+
+        // Horizontal scrollbar
+        if let Ok(mut h) = self.scrollbars.h_scroll.try_borrow_mut() {
+            let cur_val = h.get_value();
+            let page = width.max(1);
+            h.set_params(
+                cur_val,
+                0,
+                (max_line_len - page).max(0),
+                page - 1,
+                1,
+            );
+            h.set_total(max_line_len);
+        }
+    }
+
+    fn v_offset(&self) -> usize {
+        self.scrollbars.v_scroll.borrow().get_value() as usize
+    }
+
+    fn h_offset(&self) -> usize {
+        self.scrollbars.h_scroll.borrow().get_value() as usize
     }
 }
 
@@ -972,20 +1154,19 @@ impl View for CertSetView {
 
         self.refresh_if_needed();
 
-        // Native scrollbars are handled by the framework
-        // The offset is managed via keyboard events
         let total = self.cached_lines.len();
-        let height = self.bounds.height_clamped();
-        let max_offset = if height > 0 {
-            total.saturating_sub(height as usize)
+        let height_i32 = self.bounds.height_clamped();
+        let max_offset = if height_i32 > 0 {
+            total.saturating_sub(height_i32 as usize)
         } else {
             0
         };
-        if self.offset > max_offset {
-            self.offset = max_offset;
-        }
-        let start = self.offset;
-        let end = (start + height as usize).min(total);
+
+        // Clamp vertical offset from scrollbar
+        let v_off = self.v_offset().min(max_offset);
+
+        let start = v_off;
+        let end = (start + height_i32 as usize).min(total);
 
         // Draw content - use the full interior width
         for (row, line) in self.cached_lines[start..end].iter().enumerate() {
@@ -995,57 +1176,70 @@ impl View for CertSetView {
                 row,
                 line,
                 width,
-                self.h_offset,
+                self.h_offset(),
             );
         }
     }
 
     fn handle_event(&mut self, event: &mut Event) {
-        // Handle keyboard scrolling - scroll 1 line per arrow key
+        // Handle keyboard scrolling via scrollbars
         let total = self.cached_lines.len();
         let height = self.bounds.height_clamped();
-        let max_offset = if height > 0 {
+        let max_v_offset = if height > 0 {
             total.saturating_sub(height as usize)
         } else {
             0
         };
+        let width = self.bounds.width_clamped() as usize;
+        let max_line_len = self.cached_lines.iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0);
+        let max_h_offset = max_line_len.saturating_sub(width);
 
         match event.what {
             EventType::Keyboard => match event.key_code {
                 KB_DOWN => {
-                    if self.offset < max_offset {
-                        self.offset += 1;
-                        event.clear();
+                    if let Ok(mut v) = self.scrollbars.v_scroll.try_borrow_mut() {
+                        let val = v.get_value();
+                        if val < max_v_offset as i32 {
+                            v.set_value(val + 1);
+                            event.clear();
+                        }
                     }
                 }
                 KB_UP => {
-                    if self.offset > 0 {
-                        self.offset -= 1;
-                        event.clear();
+                    if let Ok(mut v) = self.scrollbars.v_scroll.try_borrow_mut() {
+                        let val = v.get_value();
+                        if val > 0 {
+                            v.set_value(val - 1);
+                            event.clear();
+                        }
                     }
                 }
                 KB_LEFT => {
-                    if self.h_offset > 0 {
-                        self.h_offset -= 1;
-                        event.clear();
+                    if let Ok(mut h) = self.scrollbars.h_scroll.try_borrow_mut() {
+                        let val = h.get_value();
+                        if val > 0 {
+                            h.set_value(val - 1);
+                            event.clear();
+                        }
                     }
                 }
                 KB_RIGHT => {
-                    let width = self.bounds.width_clamped() as usize;
-                    let max_h_offset = self.cached_lines.iter()
-                        .map(|l| l.chars().count())
-                        .max()
-                        .unwrap_or(0)
-                        .saturating_sub(width);
-                    if self.h_offset < max_h_offset {
-                        self.h_offset += 1;
-                        event.clear();
+                    if let Ok(mut h) = self.scrollbars.h_scroll.try_borrow_mut() {
+                        let val = h.get_value();
+                        if val < max_h_offset as i32 {
+                            h.set_value(val + 1);
+                            event.clear();
+                        }
                     }
                 }
                 _ => {}
             }
             EventType::MouseWheelUp | EventType::MouseWheelDown => {
-                // Mouse wheel scrolls 2-3 lines
+                // Mouse wheel handled by scrollbars (frame children)
+                // But we can also handle it here for the interior
                 event.clear();
             }
             _ => {}
