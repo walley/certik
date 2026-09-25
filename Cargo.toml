@@ -28,3 +28,6 @@ rcgen = "0.14"
 # X.509 / key decoding
 openssl = { version = "0.10", features = ["vendored"] }
 chrono = "0.4"
+
+# Random for Tetris
+rand = "0.8"

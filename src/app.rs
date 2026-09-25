@@ -53,6 +53,7 @@ const CM_WIN_ZOOM: CommandId = 206; // Window > Zoom (maximize/restore)
 const CM_WIN_MINIMIZE: CommandId = 207; // Window > Minimize (shade)
 const CM_WIN_RESTORE: CommandId = 208; // Window > Restore
 const CM_ABOUT: CommandId = 209; // Help > About (framework 3.0 removed CM_ABOUT)
+const CM_TETRIS: CommandId = 210; // Help > Tetris
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -254,6 +255,7 @@ fn main_loop(ui: &mut Ui) {
                     CM_WIN_RESTORE => window_menu_action(ui, WinAction::Restore),
                     CM_SHORTCUTS => show_shortcuts(ui),
                     CM_ABOUT => show_about(ui),
+                    CM_TETRIS => show_tetris(ui),
                     _ => {}
                 }
             }
@@ -409,6 +411,8 @@ fn build_menu_bar(app: &mut Application, w: i16) {
         "~H~elp",
         MenuBuilder::new()
             .item("~K~eyboard Shortcuts", CM_SHORTCUTS)
+            .separator()
+            .item("~T~etris", CM_TETRIS)
             .separator()
             .item("~A~bout...", CM_ABOUT)
             .build(),
@@ -822,6 +826,23 @@ fn show_shortcuts(ui: &mut Ui) {
     );
 }
 
+fn show_tetris(ui: &mut Ui) {
+    let (w, h) = ui.app.terminal.size();
+    let win_w = 32;
+    let win_h = 26;
+    let x = (w - win_w) / 2;
+    let y = (h - win_h) / 2;
+
+    let mut window = WindowBuilder::new()
+        .bounds(Rect::new(x, y, x + win_w, y + win_h))
+        .title("Tetris")
+        .build();
+
+    let interior = Rect::new(0, 0, win_w - 2, win_h - 2);
+    window.add(Box::new(TetrisView::new(interior)));
+    add_managed_window(ui, window, WinKey::next_aux());
+}
+
 // ---------------------------------------------------------------------------
 // ServerLogView - renders the shared API log directly from shared state
 // ---------------------------------------------------------------------------
@@ -971,6 +992,510 @@ impl View for WinKeyMarker {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// TetrisView - simple Tetris game using native drawing
+// ---------------------------------------------------------------------------
+
+const TETRIS_WIDTH: usize = 10;
+const TETRIS_HEIGHT: usize = 20;
+const TETRIS_CELL_W: usize = 2;
+const TETRIS_CELL_H: usize = 1;
+
+#[derive(Clone, Copy, PartialEq)]
+enum TetrominoType {
+    I, J, L, O, S, T, Z,
+}
+
+#[derive(Clone, Copy)]
+struct Tetromino {
+    ttype: TetrominoType,
+    x: i8,
+    y: i8,
+    rotation: u8,
+}
+
+impl Tetromino {
+    fn new(ttype: TetrominoType) -> Self {
+        Self { ttype, x: 3, y: 0, rotation: 0 }
+    }
+
+    fn blocks(&self) -> [(i8, i8); 4] {
+        let shapes = match self.ttype {
+            TetrominoType::I => [
+                [(0,0),(1,0),(2,0),(3,0)],
+                [(2,0),(2,1),(2,2),(2,3)],
+                [(0,1),(1,1),(2,1),(3,1)],
+                [(1,0),(1,1),(1,2),(1,3)],
+            ],
+            TetrominoType::J => [
+                [(0,0),(0,1),(1,1),(2,1)],
+                [(1,0),(2,0),(1,1),(1,2)],
+                [(0,0),(1,0),(2,0),(2,1)],
+                [(1,0),(1,1),(0,2),(1,2)],
+            ],
+            TetrominoType::L => [
+                [(2,0),(0,1),(1,1),(2,1)],
+                [(1,0),(1,1),(1,2),(2,2)],
+                [(0,0),(0,1),(1,0),(2,0)],
+                [(0,0),(1,0),(0,1),(0,2)],
+            ],
+            TetrominoType::O => [
+                [(0,0),(1,0),(0,1),(1,1)],
+                [(0,0),(1,0),(0,1),(1,1)],
+                [(0,0),(1,0),(0,1),(1,1)],
+                [(0,0),(1,0),(0,1),(1,1)],
+            ],
+            TetrominoType::S => [
+                [(1,0),(2,0),(0,1),(1,1)],
+                [(1,0),(1,1),(2,1),(2,2)],
+                [(1,0),(2,0),(0,1),(1,1)],
+                [(1,0),(1,1),(2,1),(2,2)],
+            ],
+            TetrominoType::T => [
+                [(1,0),(0,1),(1,1),(2,1)],
+                [(1,0),(1,1),(1,2),(2,1)],
+                [(0,0),(1,0),(2,0),(1,1)],
+                [(0,1),(1,0),(1,1),(1,2)],
+            ],
+            TetrominoType::Z => [
+                [(0,0),(1,0),(1,1),(2,1)],
+                [(2,0),(1,1),(2,1),(1,2)],
+                [(0,0),(1,0),(1,1),(2,1)],
+                [(2,0),(1,1),(2,1),(1,2)],
+            ],
+        };
+        let rot = self.rotation as usize % 4;
+        let base = shapes[rot];
+        [
+            (base[0].0 + self.x, base[0].1 + self.y),
+            (base[1].0 + self.x, base[1].1 + self.y),
+            (base[2].0 + self.x, base[2].1 + self.y),
+            (base[3].0 + self.x, base[3].1 + self.y),
+        ]
+    }
+
+    fn color(&self) -> Attr {
+        match self.ttype {
+            TetrominoType::I => Attr::new(TvColor::LightCyan, TvColor::Black),
+            TetrominoType::J => Attr::new(TvColor::LightBlue, TvColor::Black),
+            TetrominoType::L => Attr::new(TvColor::Yellow, TvColor::Black),
+            TetrominoType::O => Attr::new(TvColor::LightGreen, TvColor::Black),
+            TetrominoType::S => Attr::new(TvColor::LightRed, TvColor::Black),
+            TetrominoType::T => Attr::new(TvColor::LightMagenta, TvColor::Black),
+            TetrominoType::Z => Attr::new(TvColor::White, TvColor::Black),
+        }
+    }
+
+    fn rotated(&self) -> Self {
+        let mut t = *self;
+        t.rotation = (t.rotation + 1) % 4;
+        t
+    }
+
+    fn moved(&self, dx: i8, dy: i8) -> Self {
+        let mut t = *self;
+        t.x = (t.x + dx).clamp(0, (TETRIS_WIDTH - 4) as i8);
+        t.y = t.y + dy;
+        t
+    }
+}
+
+struct TetrisView {
+    bounds: Rect,
+    core: ViewCore,
+    board: [[Option<TetrominoType>; TETRIS_WIDTH]; TETRIS_HEIGHT],
+    current: Option<Tetromino>,
+    next: TetrominoType,
+    score: u32,
+    lines: u32,
+    level: u32,
+    game_over: bool,
+    tick_timer: u32,
+    grow_mode: GrowFlags,
+}
+
+impl TetrisView {
+    fn new(bounds: Rect) -> Self {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let next = Self::random_type(&mut rng);
+        let mut view = Self {
+            bounds,
+            core: ViewCore::new(bounds),
+            board: [[None; TETRIS_WIDTH]; TETRIS_HEIGHT],
+            current: None,
+            next,
+            score: 0,
+            lines: 0,
+            level: 1,
+            game_over: false,
+            tick_timer: 0,
+            grow_mode: GrowFlags::empty(),
+        };
+        view.spawn_piece();
+        view
+    }
+
+    fn random_type(rng: &mut impl rand::Rng) -> TetrominoType {
+        match rng.gen_range(0..7) {
+            0 => TetrominoType::I,
+            1 => TetrominoType::J,
+            2 => TetrominoType::L,
+            3 => TetrominoType::O,
+            4 => TetrominoType::S,
+            5 => TetrominoType::T,
+            _ => TetrominoType::Z,
+        }
+    }
+
+    fn spawn_piece(&mut self) {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        self.current = Some(Tetromino::new(self.next));
+        self.next = Self::random_type(&mut rng);
+        // Check game over
+        if let Some(cur) = self.current {
+            for (x, y) in cur.blocks() {
+                if y >= 0 && y < TETRIS_HEIGHT as i8 && x >= 0 && x < TETRIS_WIDTH as i8 {
+                    if self.board[y as usize][x as usize].is_some() {
+                        self.game_over = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn can_place(&self, t: &Tetromino) -> bool {
+        for (x, y) in t.blocks() {
+            if x < 0 || x >= TETRIS_WIDTH as i8 || y >= TETRIS_HEIGHT as i8 {
+                return false;
+            }
+            if y >= 0 && self.board[y as usize][x as usize].is_some() {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn lock_piece(&mut self) {
+        if let Some(cur) = self.current.take() {
+            for (x, y) in cur.blocks() {
+                if y >= 0 && y < TETRIS_HEIGHT as i8 && x >= 0 && x < TETRIS_WIDTH as i8 {
+                    self.board[y as usize][x as usize] = Some(cur.ttype);
+                }
+            }
+            self.clear_lines();
+            self.spawn_piece();
+        }
+    }
+
+    fn clear_lines(&mut self) {
+        let mut cleared = 0;
+        let mut y = TETRIS_HEIGHT - 1;
+        while y > 0 {
+            if self.board[y].iter().all(|c| c.is_some()) {
+                cleared += 1;
+                for row in (1..=y).rev() {
+                    self.board[row] = self.board[row - 1];
+                }
+                self.board[0] = [None; TETRIS_WIDTH];
+            } else {
+                if y == 0 { break; }
+                y -= 1;
+            }
+        }
+        if cleared > 0 {
+            self.lines += cleared;
+            self.score += match cleared {
+                1 => 40 * (self.level + 1),
+                2 => 100 * (self.level + 1),
+                3 => 300 * (self.level + 1),
+                4 => 1200 * (self.level + 1),
+                _ => 0,
+            };
+            self.level = self.lines / 10 + 1;
+        }
+    }
+
+    fn tick(&mut self) {
+        if self.game_over {
+            return;
+        }
+        self.tick_timer += 1;
+        let speed = match self.level {
+            1 => 48, 2 => 43, 3 => 38, 4 => 33, 5 => 28,
+            6 => 23, 7 => 18, 8 => 13, 9 => 8, _ => 5,
+        };
+        if self.tick_timer >= speed {
+            self.tick_timer = 0;
+            if let Some(cur) = self.current {
+                let moved = cur.moved(0, 1);
+                if self.can_place(&moved) {
+                    self.current = Some(moved);
+                } else {
+                    self.lock_piece();
+                }
+            }
+        }
+    }
+
+    fn handle_key(&mut self, key: u16) {
+        use turbo_vision::core::event::{KB_LEFT, KB_RIGHT, KB_DOWN, KB_UP, KB_ESC};
+        if self.game_over {
+            if key == KB_ESC {
+                self.reset();
+            }
+            return;
+        }
+        if let Some(cur) = self.current {
+            match key {
+                KB_LEFT => {
+                    let moved = cur.moved(-1, 0);
+                    if self.can_place(&moved) {
+                        self.current = Some(moved);
+                    }
+                }
+                KB_RIGHT => {
+                    let moved = cur.moved(1, 0);
+                    if self.can_place(&moved) {
+                        self.current = Some(moved);
+                    }
+                }
+                KB_DOWN => {
+                    let moved = cur.moved(0, 1);
+                    if self.can_place(&moved) {
+                        self.current = Some(moved);
+                        self.score += 1;
+                    } else {
+                        self.lock_piece();
+                    }
+                }
+                KB_UP => {
+                    let rotated = cur.rotated();
+                    if self.can_place(&rotated) {
+                        self.current = Some(rotated);
+                    } else {
+                        // Wall kicks
+                        for dx in [-1, 1, -2, 2] {
+                            let kicked = Tetromino { x: rotated.x + dx, ..rotated };
+                            if self.can_place(&kicked) {
+                                self.current = Some(kicked);
+                                break;
+                            }
+                        }
+                    }
+                }
+                KB_ESC => {
+                    // Could pause or quit
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.board = [[None; TETRIS_WIDTH]; TETRIS_HEIGHT];
+        self.current = None;
+        self.score = 0;
+        self.lines = 0;
+        self.level = 1;
+        self.game_over = false;
+        self.tick_timer = 0;
+        self.spawn_piece();
+    }
+}
+
+impl View for TetrisView {
+    fn core(&self) -> &ViewCore {
+        &self.core
+    }
+    fn core_mut(&mut self) -> &mut ViewCore {
+        &mut self.core
+    }
+    fn bounds(&self) -> Rect {
+        self.bounds
+    }
+    fn set_bounds(&mut self, bounds: Rect) {
+        self.bounds = bounds;
+    }
+    fn draw(&mut self, terminal: &mut Terminal) {
+        self.tick();
+        let width = self.bounds.width_clamped() as usize;
+        let height = self.bounds.height_clamped() as usize;
+        let board_w = TETRIS_WIDTH * TETRIS_CELL_W;
+        let board_h = TETRIS_HEIGHT * TETRIS_CELL_H;
+        let start_x = (width.saturating_sub(board_w)) / 2;
+        let start_y = (height.saturating_sub(board_h)) / 2;
+
+        // Clear background
+        for y in 0..height {
+            let blank = " ".repeat(width);
+            let mut buf = DrawBuffer::new(width);
+            buf.move_str(0, &blank, colors::NORMAL);
+            write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+        }
+
+        // Draw board border
+        let border_attr = Attr::new(TvColor::DarkGray, TvColor::Black);
+        for y in 0..=board_h {
+            for x in [start_x.saturating_sub(1), start_x + board_w] {
+                if x < width {
+                    let mut buf = DrawBuffer::new(width);
+                    buf.move_str(x, "│", border_attr);
+                    write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + start_y as i16 + y as i16, &buf);
+                }
+            }
+        }
+        for x in 0..=board_w + 1 {
+            for y in [start_y.saturating_sub(1), start_y + board_h] {
+                if y < height {
+                    let mut buf = DrawBuffer::new(width);
+                    let ch = if x == 0 || x == board_w + 1 { "┤" } else { "─" };
+                    buf.move_str(start_x + x, ch, border_attr);
+                    write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+                }
+            }
+        }
+
+        // Draw locked pieces
+        for (row, line) in self.board.iter().enumerate() {
+            for (col, cell) in line.iter().enumerate() {
+                if let Some(ttype) = cell {
+                    let attr = match ttype {
+                        TetrominoType::I => Attr::new(TvColor::LightCyan, TvColor::Black),
+                        TetrominoType::J => Attr::new(TvColor::LightBlue, TvColor::Black),
+                        TetrominoType::L => Attr::new(TvColor::Yellow, TvColor::Black),
+                        TetrominoType::O => Attr::new(TvColor::LightGreen, TvColor::Black),
+                        TetrominoType::S => Attr::new(TvColor::LightRed, TvColor::Black),
+                        TetrominoType::T => Attr::new(TvColor::LightMagenta, TvColor::Black),
+                        TetrominoType::Z => Attr::new(TvColor::White, TvColor::Black),
+                    };
+                    let x = start_x + col * TETRIS_CELL_W;
+                    let y = start_y + row * TETRIS_CELL_H;
+                    if x + 1 < width && y < height {
+                        let mut buf = DrawBuffer::new(width);
+                        buf.move_str(x, "██", attr);
+                        write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+                    }
+                }
+            }
+        }
+
+        // Draw current piece
+        if let Some(cur) = self.current {
+            let attr = cur.color();
+            for (x, y) in cur.blocks() {
+                if y >= 0 && y < TETRIS_HEIGHT as i8 && x >= 0 && x < TETRIS_WIDTH as i8 {
+                    let draw_x = start_x + (x as usize) * TETRIS_CELL_W;
+                    let draw_y = start_y + (y as usize) * TETRIS_CELL_H;
+                    if draw_x + 1 < width && draw_y < height {
+                        let mut buf = DrawBuffer::new(width);
+                        buf.move_str(draw_x, "██", attr);
+                        write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + draw_y as i16, &buf);
+                    }
+                }
+            }
+        }
+
+        // Draw sidebar info
+        let info_x = start_x + board_w + 3;
+        if info_x < width {
+            let lines = [
+                format!("Score: {}", self.score),
+                format!("Lines: {}", self.lines),
+                format!("Level: {}", self.level),
+                String::new(),
+                "Next:".to_string(),
+            ];
+            for (i, line) in lines.iter().enumerate() {
+                let y = start_y + i;
+                if y < height {
+                    let mut buf = DrawBuffer::new(width);
+                    buf.move_str(info_x, line, Attr::new(TvColor::White, TvColor::Black));
+                    write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+                }
+            }
+            // Draw next piece preview
+            let preview = match self.next {
+                TetrominoType::I => [(0,0),(1,0),(2,0),(3,0)],
+                TetrominoType::J => [(0,0),(0,1),(1,1),(2,1)],
+                TetrominoType::L => [(2,0),(0,1),(1,1),(2,1)],
+                TetrominoType::O => [(0,0),(1,0),(0,1),(1,1)],
+                TetrominoType::S => [(1,0),(2,0),(0,1),(1,1)],
+                TetrominoType::T => [(1,0),(0,1),(1,1),(2,1)],
+                TetrominoType::Z => [(0,0),(1,0),(1,1),(2,1)],
+            };
+            let next_attr = match self.next {
+                TetrominoType::I => Attr::new(TvColor::LightCyan, TvColor::Black),
+                TetrominoType::J => Attr::new(TvColor::LightBlue, TvColor::Black),
+                TetrominoType::L => Attr::new(TvColor::Yellow, TvColor::Black),
+                TetrominoType::O => Attr::new(TvColor::LightGreen, TvColor::Black),
+                TetrominoType::S => Attr::new(TvColor::LightRed, TvColor::Black),
+                TetrominoType::T => Attr::new(TvColor::LightMagenta, TvColor::Black),
+                TetrominoType::Z => Attr::new(TvColor::White, TvColor::Black),
+            };
+            for (px, py) in preview {
+                let x = info_x + (px as usize) * TETRIS_CELL_W;
+                let y = start_y + 6 + (py as usize) * TETRIS_CELL_H;
+                if x + 1 < width && y < height {
+                    let mut buf = DrawBuffer::new(width);
+                    buf.move_str(x, "██", next_attr);
+                    write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+                }
+            }
+        }
+
+        // Game over overlay
+        if self.game_over {
+            let msg = "GAME OVER";
+            let msg2 = "Press ESC to restart";
+            let x = (width.saturating_sub(msg.len())) / 2;
+            let y = height / 2;
+            if y < height {
+                let mut buf = DrawBuffer::new(width);
+                buf.move_str(x, msg, Attr::new(TvColor::LightRed, TvColor::Black));
+                write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + y as i16, &buf);
+            }
+            if y + 1 < height {
+                let x2 = (width.saturating_sub(msg2.len())) / 2;
+                let mut buf = DrawBuffer::new(width);
+                buf.move_str(x2, msg2, Attr::new(TvColor::Yellow, TvColor::Black));
+                write_line_to_terminal(terminal, self.bounds.a.x, self.bounds.a.y + (y + 1) as i16, &buf);
+            }
+        }
+    }
+    fn handle_event(&mut self, event: &mut Event) {
+        use turbo_vision::core::event::{EventType, KB_LEFT, KB_RIGHT, KB_DOWN, KB_UP, KB_ESC};
+        match event.what {
+            EventType::Keyboard => {
+                self.handle_key(event.key_code);
+                event.clear();
+            }
+            _ => {}
+        }
+    }
+    fn can_focus(&self) -> bool {
+        true
+    }
+    fn get_palette(&self) -> Option<Palette> {
+        None
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn grow_mode(&self) -> GrowFlags {
+        self.grow_mode
+    }
+    fn set_grow_mode(&mut self, grow_mode: GrowFlags) {
+        self.grow_mode = grow_mode;
     }
 }
 
