@@ -21,7 +21,7 @@ use turbo_vision::app::Application;
 use turbo_vision::core::command::{CommandId, CM_CASCADE, CM_COPY, CM_CUT, CM_PASTE, CM_QUIT, CM_REDO, CM_TILE, CM_UNDO};
 use turbo_vision::core::draw::DrawBuffer;
 use turbo_vision::core::error::Result;
-use turbo_vision::core::event::{Event, EventType, KB_ALT_X, KB_DOWN, KB_F10, KB_F3, KB_UP, KB_RIGHT, KB_LEFT};
+use turbo_vision::core::event::{Event, EventType, KB_ALT_X, KB_CTRL_N, KB_DOWN, KB_F10, KB_F3, KB_UP, KB_RIGHT, KB_LEFT};
 use turbo_vision::core::geometry::Rect;
 use turbo_vision::core::menu_data::MenuBuilder;
 use turbo_vision::core::palette::{Attr, TvColor, colors, Palette};
@@ -376,7 +376,7 @@ fn build_menu_bar(app: &mut Application, w: i16) {
     menu_bar.add_submenu(SubMenu::new(
         "~F~ile",
         MenuBuilder::new()
-            .item("~N~ew Certificate Set", CM_NEW_SET)
+            .item_key("~N~ew Certificate Set", CM_NEW_SET, "Ctrl+N")
             .separator()
             .item_key("~O~pen Certificate...", CM_LOAD_CERT, "F3")
             .item("Open ~I~ntermediate...", CM_LOAD_INT)
@@ -430,6 +430,11 @@ fn build_status_line(app: &mut Application, w: i16, h: i16) {
     app.set_status_line(StatusLine::new(
         Rect::new(0, h - 1, w, h),
         vec![
+            StatusItemBuilder::new()
+                .text("~Ctrl+N~ New")
+                .key_code(KB_CTRL_N)
+                .command(CM_NEW_SET)
+                .build(),
             StatusItemBuilder::new()
                 .text("~F3~ Open Cert")
                 .key_code(KB_F3)
@@ -826,7 +831,7 @@ fn run_file_dialog(app: &mut Application, title: &str, start_dir: Option<&Path>)
 fn show_shortcuts(ui: &mut Ui) {
     message_box(
         &mut ui.app,
-        "F3      Open certificate into active set\nAlt+X   Exit\nArrows/Wheel  Scroll windows",
+        "Ctrl+N  New certificate set\nF3      Open certificate into active set\nAlt+X   Exit\nArrows/Wheel  Scroll windows",
         MsgBox::INFORMATION | MsgBox::OK_BUTTON,
     );
 }

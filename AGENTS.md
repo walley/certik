@@ -131,7 +131,11 @@ apply the effective action (zoom falls back to the framework's
 
 Menus are built with `MenuBuilder` (`item`, `item_key`, `separator`, `build`);
 submenus via `MenuBar::add_submenu(SubMenu::new(...))`. Status items use
-`StatusItemBuilder`. Custom commands start at `CM_NEW_SET = 200` and go up
+`StatusItemBuilder`. Keyboard shortcuts are bound with `item_key(text, cmd,
+chord)` / `StatusItemBuilder.key_code(...)` (e.g. `Ctrl+N` → `CM_NEW_SET`,
+F3 → `CM_LOAD_CERT`): the menu bar gets first shot at every key event and
+resolves closed-bar hotkeys via `Menu::find_hotkey` before any view sees the
+key, so chords work even while a game or dialog has focus. Custom commands start at `CM_NEW_SET = 200` and go up
 through `CM_SNAKE = 211` (reserved range above `CM_USER`): `CM_ABOUT = 209`,
 `CM_TETRIS = 210`, `CM_SNAKE = 211`. `CM_ABOUT` is defined locally (the
 framework no longer ships one). The games are opened by `show_tetris` /
