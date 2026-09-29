@@ -151,14 +151,31 @@ chord)` / `StatusItemBuilder.key_code(...)` (e.g. `Ctrl+N` → `CM_NEW_SET`,
 F3 → `CM_LOAD_CERT`): the menu bar gets first shot at every key event and
 resolves closed-bar hotkeys via `Menu::find_hotkey` before any view sees the
 key, so chords work even while a game or dialog has focus. Custom commands start at `CM_NEW_SET = 200` and go up
-through `CM_API_CERT = 212` (reserved range above `CM_USER`): `CM_ABOUT = 209`,
-`CM_TETRIS = 210`, `CM_SNAKE = 211`, `CM_API_CERT = 212`. `CM_ABOUT` is defined locally (the
+through `CM_API_CERT = 212` and `CM_WINDOW_LIST = 213` (reserved range above
+`CM_USER`): `CM_ABOUT = 209`, `CM_TETRIS = 210`, `CM_SNAKE = 211`,
+`CM_API_CERT = 212`, `CM_WINDOW_LIST = 213` (Window > open-window list; the
+items are `213 + index`). `CM_ABOUT` is defined locally (the
 framework no longer ships one). The games are opened by `show_tetris` /
 `show_snake` in `app.rs`: each builds a **non-resizable** `WindowBuilder`
 window (`resizable(false)` — a `Dialog` broke `add_managed_window(Window)`)
 and installs its view with `WinKey::next_aux()`. Sizes: Tetris 40x26, Snake
 44x26 (wide enough for its board, gap, and score sidebar with a margin of
 window-blue on both sides).
+
+**Window menu open-window list**: below the Tile/Cascade/Zoom/Minimize/Restore
+items (after a separator), the Window menu lists every open window, topmost
+first, as `N. <title>` with command `CM_WINDOW_LIST + index`. Clicking an entry
+brings that window to the front (restoring it first if shaded). The list is not
+static: the framework's `Window`/`Frame` expose no public title getter and the
+menu bar cannot update a single submenu, so the whole menu bar is rebuilt when
+the open-window set changes. `open_window_items(ui)` scans the desktop
+topmost-first, resolving titles from certik bookkeeping (`win_ids`,
+`aux_titles`, `welcome`, and set titles from shared state); `sync_window_menu`
+compares that list against the last one the menu was built from and, on
+difference, calls `build_menu_bar(..., &items)`. It runs in `main_loop`'s event
+branch only (after `remove_closed_windows`), never on idle, so the idle-CPU
+policy is unaffected; selecting an entry reorders the z-order, which is itself
+a list change that triggers the next rebuild.
 
 ## API subsystem (`src/api.rs`)
 

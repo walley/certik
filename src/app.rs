@@ -24,7 +24,7 @@ use turbo_vision::core::draw::DrawBuffer;
 use turbo_vision::core::error::Result;
 use turbo_vision::core::event::{Event, EventType, KB_ALT_X, KB_CTRL_N, KB_DOWN, KB_F10, KB_F3, KB_UP, KB_RIGHT, KB_LEFT};
 use turbo_vision::core::geometry::Rect;
-use turbo_vision::core::menu_data::MenuBuilder;
+use turbo_vision::core::menu_data::{Menu, MenuBuilder};
 use turbo_vision::core::palette::{Attr, TvColor, colors, Palette};
 use turbo_vision::core::state::{Grow, GrowFlags};
 use turbo_vision::core::status_data::StatusItemBuilder;
@@ -35,7 +35,7 @@ use turbo_vision::views::menu_bar::{MenuBar, SubMenu};
 use turbo_vision::views::msgbox::{message_box, MsgBox};
 use turbo_vision::views::status_line::StatusLine;
 use turbo_vision::views::text_viewer::TextViewerBuilder;
-use turbo_vision::views::view::{write_line_to_terminal, View, ViewCore};
+use turbo_vision::views::view::{write_line_to_terminal, View, ViewCore, ViewId};
 use turbo_vision::views::window::{Window, WindowBuilder};
 use turbo_vision::views::scrollbar::ScrollBar;
 
@@ -59,6 +59,7 @@ const CM_ABOUT: CommandId = 209; // Help > About (framework 3.0 removed CM_ABOUT
 const CM_TETRIS: CommandId = 210; // Help > Tetris
 const CM_SNAKE: CommandId = 211; // Help > Snake
 const CM_API_CERT: CommandId = 212; // Edit > Activate Cert for API
+const CM_WINDOW_LIST: CommandId = 213; // Window > open-window list (items are 213 + index)
 
 /// Mirror of the "Activate Cert for API" toggle, read by the menu bar's right
 /// indicator. It lives in a static because `set_right_indicator` takes a plain
@@ -117,6 +118,18 @@ struct Ui {
     win_state: HashMap<WinKey, WinState>,
     /// Remember the last loaded directory for FileDialog.
     last_directory: Option<PathBuf>,
+    /// WinKey -> ViewId of each open managed window, so the Window menu's
+    /// open-window list can bring a window to the front.
+    win_ids: HashMap<WinKey, ViewId>,
+    /// Titles of Aux windows (Tetris / Snake / File Report) by Aux counter.
+    /// The framework's `Window` exposes no public title getter, so certik
+    /// records titles itself for the Window menu list.
+    aux_titles: HashMap<u32, String>,
+    /// ViewId + title of the unmanaged welcome window, if still open.
+    welcome: Option<(ViewId, String)>,
+    /// Open-window list (topmost first) the Window menu was last built from;
+    /// `sync_window_menu` rebuilds the menu bar when this changes.
+    menu_windows: Vec<(Option<WinKey>, String)>,
 }
 
 pub fn run(
@@ -145,7 +158,6 @@ pub fn run(
     let mut app = Application::new()?;
     let (w, h) = app.terminal.size();
 
-    build_menu_bar(&mut app, w);
     build_status_line(&mut app, w, h);
 
     let mut ui = Ui {
@@ -157,6 +169,10 @@ pub fn run(
         log: log.clone(),
         win_state: HashMap::new(),
         last_directory: None,
+        win_ids: HashMap::new(),
+        aux_titles: HashMap::new(),
+        welcome: None,
+        menu_windows: Vec::new(),
     };
 
     // API server status window (live view onto the shared log).
@@ -198,7 +214,8 @@ pub fn run(
     // viewer stays a fixed size and overflows when the window is resized).
     welcome_viewer.set_grow_mode(Grow::HI_X | Grow::HI_Y);
     welcome_window.add(Box::new(welcome_viewer));
-    ui.app.desktop.add(Box::new(welcome_window));
+    let welcome_id = ui.app.desktop.add(Box::new(welcome_window));
+    ui.welcome = Some((welcome_id, "Welcome".to_string()));
 
     // Pre-load files from CLI flags (--cert, --key).
     if !load_certs.is_empty() || !load_keys.is_empty() {
@@ -254,6 +271,14 @@ pub fn run(
         }
     }
 
+    // The Window menu lists the currently open windows (server + welcome +
+    // any CLI-preloaded sets); build it once all windows exist.
+    // `sync_window_menu` in the main loop rebuilds it whenever that set changes.
+    let initial_windows = open_window_items(&ui);
+    ui.menu_windows = initial_windows.clone();
+    let (w, _h) = ui.app.terminal.size();
+    build_menu_bar(&mut ui.app, w, &initial_windows);
+
     main_loop(&mut ui);
     ui.app.terminal.shutdown()?;
     Ok(())
@@ -297,6 +322,9 @@ fn main_loop(ui: &mut Ui) {
                         CM_TETRIS => show_tetris(ui),
                         CM_SNAKE => show_snake(ui),
                         CM_API_CERT => toggle_api_cert(ui),
+                        c if (CM_WINDOW_LIST..CM_WINDOW_LIST + 64).contains(&c) => {
+                            focus_window_from_menu(ui, (c - CM_WINDOW_LIST) as usize)
+                        }
                         _ => {}
                     }
                 }
@@ -308,6 +336,10 @@ fn main_loop(ui: &mut Ui) {
 
                 sync_scrollbars(ui);
                 sync_focus(ui);
+
+                // Keep the Window menu's open-window list in sync (open/close
+                // and z-order changes) before the menu bar is drawn.
+                sync_window_menu(ui);
 
                 // Draw the frame produced by the handled event.
                 ui.app.draw();
@@ -457,7 +489,7 @@ fn effective_action(ui: &Ui, key: WinKey, action: WinAction) -> WinAction {
 // Menus and status line
 // ---------------------------------------------------------------------------
 
-fn build_menu_bar(app: &mut Application, w: i16) {
+fn build_menu_bar(app: &mut Application, w: i16, window_items: &[(Option<WinKey>, String)]) {
     let mut menu_bar = MenuBar::new(Rect::new(0, 0, w, 1));
 
     menu_bar.add_submenu(SubMenu::new(
@@ -490,14 +522,7 @@ fn build_menu_bar(app: &mut Application, w: i16) {
 
     menu_bar.add_submenu(SubMenu::new(
         "~W~indow",
-        MenuBuilder::new()
-            .item("~T~ile", CM_TILE)
-            .item("C~a~scade", CM_CASCADE)
-            .separator()
-            .item("~Z~oom / Restore", CM_WIN_ZOOM)
-            .item("Mi~n~imize", CM_WIN_MINIMIZE)
-            .item("~R~estore", CM_WIN_RESTORE)
-            .build(),
+        build_window_menu(window_items),
     ));
 
     menu_bar.add_submenu(SubMenu::new(
@@ -526,6 +551,121 @@ fn build_menu_bar(app: &mut Application, w: i16) {
     });
 
     app.set_menu_bar(menu_bar);
+}
+
+/// Build the Window submenu: Tile/Cascade/Zoom/Minimize/Restore, then (after
+/// a separator) the numbered list of open windows, topmost first. Each list
+/// item is command `CM_WINDOW_LIST + index`; the zero-based index maps to the
+/// current z-order at dispatch time (the dropdown is closed before commands
+/// fire, so the order cannot change in between).
+fn build_window_menu(window_items: &[(Option<WinKey>, String)]) -> Menu {
+    let mut mb = MenuBuilder::new()
+        .item("~T~ile", CM_TILE)
+        .item("C~a~scade", CM_CASCADE)
+        .separator()
+        .item("~Z~oom / Restore", CM_WIN_ZOOM)
+        .item("Mi~n~imize", CM_WIN_MINIMIZE)
+        .item("~R~estore", CM_WIN_RESTORE);
+
+    if !window_items.is_empty() {
+        mb = mb.separator();
+        for (i, (_, title)) in window_items.iter().enumerate() {
+            let text = format!("{}. {}", i + 1, title);
+            mb = mb.item(&text, CM_WINDOW_LIST + i as CommandId);
+        }
+    }
+    mb.build()
+}
+
+// ---------------------------------------------------------------------------
+// Window menu: open-window list
+// ---------------------------------------------------------------------------
+
+/// Every open desktop window, topmost first, as (key, title) for the Window
+/// menu's open-window list. `None` key = the unmanaged welcome window. Titles
+/// are resolved from certik bookkeeping (`aux_titles`/`welcome`, plus set
+/// titles from shared state) because the framework's `Window` has no public
+/// title getter.
+fn open_window_items(ui: &Ui) -> Vec<(Option<WinKey>, String)> {
+    let d = &ui.app.desktop;
+    let mut out = Vec::new();
+    for i in (0..d.child_count()).rev() {
+        let view = d.child_at(i);
+        let Some(win) = view.as_any().downcast_ref::<Window>() else {
+            continue;
+        };
+        let key = window_key(win);
+        let title = match key {
+            Some(WinKey::Server) => "API Server".to_string(),
+            Some(WinKey::Set(id)) => {
+                let sets = ui.sets.lock().expect("sets lock");
+                sets.iter()
+                    .find(|s: &&Arc<Mutex<CertSet>>| matches!(s.lock(), Ok(st) if st.id == id))
+                    .map(|s| s.lock().map(|st| st.title.clone()).unwrap_or_default())
+                    .unwrap_or_default()
+            }
+            Some(WinKey::Aux(n)) => ui.aux_titles.get(&n).cloned().unwrap_or_default(),
+            None => ui
+                .welcome
+                .as_ref()
+                .map(|(_, title)| title.clone())
+                .unwrap_or_else(|| "Welcome".to_string()),
+        };
+        out.push((key, title));
+    }
+    out
+}
+
+/// Rebuild the menu bar's Window submenu when the set of open windows changed
+/// (the `(key, title)` list is the change signature). Called from the event
+/// branch of `main_loop` only, when the menu dropdown is not open and the next
+/// frame is drawn right after, so a rebuild here is always rendered.
+fn sync_window_menu(ui: &mut Ui) {
+    let items = open_window_items(ui);
+    if items == ui.menu_windows {
+        return;
+    }
+    ui.menu_windows = items.clone();
+    let (w, _h) = ui.app.terminal.size();
+    build_menu_bar(&mut ui.app, w, &items);
+}
+
+/// Window > open-window-list click: bring that window to the front, restoring
+/// it first if it was shaded. The list order is recomputed here, so the
+/// command index maps 1:1 to the current z-order.
+fn focus_window_from_menu(ui: &mut Ui, idx: usize) {
+    let items = open_window_items(ui);
+    let Some((key, _)) = items.get(idx) else {
+        return;
+    };
+    let key = *key;
+
+    let count = ui.app.desktop.child_count();
+    let Some(child_index) = count.checked_sub(1 + idx) else {
+        return;
+    };
+
+    // Restore a shaded target before bringing it forward.
+    if let Some(k) = key {
+        let saved = ui.win_state.get_mut(&k).and_then(|s| s.saved_bounds.take());
+        if let (Some(saved), Some(w)) = (saved, ui.app.desktop.window_at_mut(child_index)) {
+            w.set_bounds(saved);
+        }
+    }
+
+    let moved = match key {
+        Some(k) => ui
+            .win_ids
+            .get(&k)
+            .copied()
+            .map(|id| ui.app.desktop.bring_to_front(id))
+            .unwrap_or(false),
+        None => {
+            let id = ui.welcome.as_ref().map(|(id, _)| *id);
+            id.map(|id| ui.app.desktop.bring_to_front(id)).unwrap_or(false)
+        }
+    };
+    let _ = moved; // `sync_focus` in the main loop picks up the new topmost set.
 }
 
 fn build_status_line(app: &mut Application, w: i16, h: i16) {
@@ -574,7 +714,8 @@ fn add_managed_window(
     // border scrollbar recorded earlier in `new_certificate_set`) stay stable.
     window.add(Box::new(WinKeyMarker { key, core: ViewCore::new(Rect::new(0, 0, 1, 1)) }));
     ui.win_state.entry(key).or_default();
-    ui.app.desktop.add(Box::new(window));
+    let id = ui.app.desktop.add(Box::new(window));
+    ui.win_ids.insert(key, id);
 }
 
 fn add_server_window(ui: &mut Ui, bounds: Rect) {
@@ -602,7 +743,11 @@ fn open_text_window(ui: &mut Ui, title: &str, text: &str, cascade: i16) {
         .build();
     viewer.set_text(text);
     window.add(Box::new(viewer));
-    add_managed_window(ui, window, WinKey::next_aux());
+    let key = WinKey::next_aux();
+    if let WinKey::Aux(n) = key {
+        ui.aux_titles.insert(n, title.to_string());
+    }
+    add_managed_window(ui, window, key);
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,7 +1160,11 @@ fn show_tetris(ui: &mut Ui) {
 
     let interior = Rect::new(0, 0, win_w - 2, win_h - 2);
     window.add(Box::new(TetrisView::new(interior)));
-    add_managed_window(ui, window, WinKey::next_aux());
+    let key = WinKey::next_aux();
+    if let WinKey::Aux(n) = key {
+        ui.aux_titles.insert(n, "Tetris".to_string());
+    }
+    add_managed_window(ui, window, key);
 }
 
 fn show_snake(ui: &mut Ui) {
@@ -1035,7 +1184,11 @@ fn show_snake(ui: &mut Ui) {
 
     let interior = Rect::new(0, 0, win_w - 2, win_h - 2);
     window.add(Box::new(SnakeView::new(interior)));
-    add_managed_window(ui, window, WinKey::next_aux());
+    let key = WinKey::next_aux();
+    if let WinKey::Aux(n) = key {
+        ui.aux_titles.insert(n, "Snake".to_string());
+    }
+    add_managed_window(ui, window, key);
 }
 
 // ---------------------------------------------------------------------------
