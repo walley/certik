@@ -815,6 +815,29 @@ pub fn verify_set(set: &CertSet) -> Result<String, String> {
     Ok(out)
 }
 
+/// True when the set was verified without failures (Overall: PASS or
+/// PARTIAL PASS). Gates "Activate Cert for API" so only a successfully
+/// loaded + validated set can become the API's serving identity.
+pub fn verified_ok(set: &CertSet) -> bool {
+    let Some(report) = &set.verification else {
+        return false;
+    };
+    let overall = report
+        .lines()
+        .find(|l| l.starts_with("Overall"))
+        .unwrap_or("");
+    !overall.contains("FAIL")
+}
+
+/// Common name (CN) of the leaf certificate subject, if present.
+pub fn leaf_cn(set: &CertSet) -> Option<String> {
+    let cert = set.leaf.as_ref()?;
+    cert.subject_name().entries().find_map(|e| {
+        let nid = e.object().nid().short_name().unwrap_or("OID");
+        (nid == "CN").then(|| String::from_utf8_lossy(e.data().as_slice()).into_owned())
+    })
+}
+
 fn short_name_of(cert: &X509) -> String {
     let name = name_string(cert.subject_name());
     if name.chars().count() > 32 {
@@ -1078,6 +1101,25 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn verified_ok_gates_activated_sets() {
+        // Not verified yet -> not OK.
+        let set = CertSet::new(5);
+        assert!(!verified_ok(&set));
+
+        // PASS / PARTIAL PASS (no failures) -> OK.
+        let mut passed = CertSet::new(6);
+        passed.verification =
+            Some("Overall    : PARTIAL PASS (chain + key OK, but no trust anchor)".into());
+        assert!(verified_ok(&passed));
+
+        // A failing report -> not OK.
+        let mut failed = CertSet::new(7);
+        failed.verification =
+            Some("Overall    : FAIL (private key does not match the certificate)".into());
+        assert!(!verified_ok(&failed));
     }
 
     #[test]

@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -57,6 +58,13 @@ const CM_WIN_RESTORE: CommandId = 208; // Window > Restore
 const CM_ABOUT: CommandId = 209; // Help > About (framework 3.0 removed CM_ABOUT)
 const CM_TETRIS: CommandId = 210; // Help > Tetris
 const CM_SNAKE: CommandId = 211; // Help > Snake
+const CM_API_CERT: CommandId = 212; // Edit > Activate Cert for API
+
+/// Mirror of the "Activate Cert for API" toggle, read by the menu bar's right
+/// indicator. It lives in a static because `set_right_indicator` takes a plain
+/// `fn()` that cannot capture state; `toggle_api_cert` keeps the copy in `Ui`
+/// in sync.
+static API_CERT_ON: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -98,6 +106,11 @@ struct Ui {
     /// Id of the focused certificate-set window, shared with the API server so
     /// it serves data only from the focused set. Updated each loop iteration.
     focus: api::SharedFocus,
+    /// TLS identity override shared with the API server ("Activate Cert for
+    /// API"); `None` = startup identity. `api_cert_on` mirrors it for the
+    /// menu bar's right indicator.
+    api_cert: api::SharedActiveCert,
+    api_cert_on: bool,
     /// Shared API/server log shown by the TUI "API Server" window.
     log: SharedLog,
     /// Shade/minimize state per managed window (Window > Minimize / Restore).
@@ -106,7 +119,14 @@ struct Ui {
     last_directory: Option<PathBuf>,
 }
 
-pub fn run(log: SharedLog, sets: api::SharedSets, focus: api::SharedFocus, load_certs: &[PathBuf], load_keys: &[PathBuf]) -> Result<()> {
+pub fn run(
+    log: SharedLog,
+    sets: api::SharedSets,
+    focus: api::SharedFocus,
+    api_cert: api::SharedActiveCert,
+    load_certs: &[PathBuf],
+    load_keys: &[PathBuf],
+) -> Result<()> {
     // The framework's `View::as_any()` panics on views that don't override it
     // (TextViewer, Background, ScrollBar, etc.). certik's `window_key` probes
     // a window's last child for its own `WinKeyMarker` (the only view that
@@ -132,6 +152,8 @@ pub fn run(log: SharedLog, sets: api::SharedSets, focus: api::SharedFocus, load_
         app,
         sets,
         focus,
+        api_cert,
+        api_cert_on: false,
         log: log.clone(),
         win_state: HashMap::new(),
         last_directory: None,
@@ -274,6 +296,7 @@ fn main_loop(ui: &mut Ui) {
                         CM_ABOUT => show_about(ui),
                         CM_TETRIS => show_tetris(ui),
                         CM_SNAKE => show_snake(ui),
+                        CM_API_CERT => toggle_api_cert(ui),
                         _ => {}
                     }
                 }
@@ -460,6 +483,8 @@ fn build_menu_bar(app: &mut Application, w: i16) {
             .item("Cu~t~", CM_CUT)
             .item("~C~opy", CM_COPY)
             .item("~P~aste", CM_PASTE)
+            .separator()
+            .item("~A~ctivate Cert for API", CM_API_CERT)
             .build(),
     ));
 
@@ -486,6 +511,19 @@ fn build_menu_bar(app: &mut Application, w: i16) {
             .item("~A~bout...", CM_ABOUT)
             .build(),
     ));
+
+    // Switch readout for "Activate Cert for API": tracks the toggle without
+    // rebuilding the menu.
+    menu_bar.set_right_indicator(|| {
+        Some(
+            if API_CERT_ON.load(std::sync::atomic::Ordering::SeqCst) {
+                "API Cert: ON"
+            } else {
+                "API Cert: OFF"
+            }
+            .to_string(),
+        )
+    });
 
     app.set_menu_bar(menu_bar);
 }
@@ -653,6 +691,67 @@ fn active_set(ui: &Ui) -> Option<Arc<Mutex<CertSet>>> {
         }
     }
     None
+}
+
+/// Edit > "Activate Cert for API": switch the API server's TLS identity to the
+/// focused, verified certificate set (on) or back to the startup identity
+/// (off). New API connections serve the activated cert; the endpoint material
+/// still comes from the focused set as before.
+fn toggle_api_cert(ui: &mut Ui) {
+    let mut slot = ui.api_cert.lock().expect("api cert lock");
+
+    // Turn off.
+    if ui.api_cert_on {
+        *slot = None;
+        ui.api_cert_on = false;
+        API_CERT_ON.store(false, std::sync::atomic::Ordering::SeqCst);
+        crate::api::log_line(
+            &ui.log,
+            "TLS: API cert activation OFF - back to startup identity".into(),
+        );
+        return;
+    }
+
+    // Turn on: require a focused certificate set that loaded and validated.
+    let Some(set_arc) = active_set(ui) else {
+        crate::api::log_line(
+            &ui.log,
+            "TLS: cannot activate cert for API - no focused certificate set".into(),
+        );
+        return;
+    };
+    let set = set_arc.lock().expect("set lock");
+    if !crate::certs::verified_ok(&set) {
+        crate::api::log_line(
+            &ui.log,
+            format!(
+                "TLS: cannot activate cert for API - set {} ({}) is not verified (load certificate + key, then verify)",
+                set.id, set.title
+            ),
+        );
+        return;
+    }
+    let cn = crate::certs::leaf_cn(&set).unwrap_or_default();
+    match crate::api::acceptor_from_set(&set) {
+        Ok(acceptor) => {
+            *slot = Some(acceptor);
+            ui.api_cert_on = true;
+            API_CERT_ON.store(true, std::sync::atomic::Ordering::SeqCst);
+            crate::api::log_line(
+                &ui.log,
+                format!(
+                    "TLS: API cert activated - set {} ({}) CN={cn}",
+                    set.id, set.title
+                ),
+            );
+        }
+        Err(e) => {
+            crate::api::log_line(
+                &ui.log,
+                format!("TLS: cannot activate cert for API - {e}"),
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

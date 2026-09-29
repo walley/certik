@@ -35,6 +35,9 @@ The TUI and the API server run concurrently and communicate through shared
   ever created. Sets are never removed, even when their window closes.
 - `SharedFocus = Arc<AtomicUsize>` — id of the focused cert-set window. The API
   serves data only from the focused set; `api::NO_FOCUS` means none (API → 404).
+- `SharedActiveCert = Arc<Mutex<Option<TlsAcceptor>>>` — TLS identity override
+  set by the TUI "Activate Cert for API" toggle (Edit menu). `None` = serve the
+  startup identity (`--tls-cert`/`--tls-key` files or the ephemeral dev cert).
 
 The TUI updates `focus` each main-loop iteration (`sync_focus`). The tokio
 runtime is kept alive until the TUI exits (`rt` is dropped after `app::run`).
@@ -148,8 +151,8 @@ chord)` / `StatusItemBuilder.key_code(...)` (e.g. `Ctrl+N` → `CM_NEW_SET`,
 F3 → `CM_LOAD_CERT`): the menu bar gets first shot at every key event and
 resolves closed-bar hotkeys via `Menu::find_hotkey` before any view sees the
 key, so chords work even while a game or dialog has focus. Custom commands start at `CM_NEW_SET = 200` and go up
-through `CM_SNAKE = 211` (reserved range above `CM_USER`): `CM_ABOUT = 209`,
-`CM_TETRIS = 210`, `CM_SNAKE = 211`. `CM_ABOUT` is defined locally (the
+through `CM_API_CERT = 212` (reserved range above `CM_USER`): `CM_ABOUT = 209`,
+`CM_TETRIS = 210`, `CM_SNAKE = 211`, `CM_API_CERT = 212`. `CM_ABOUT` is defined locally (the
 framework no longer ships one). The games are opened by `show_tetris` /
 `show_snake` in `app.rs`: each builds a **non-resizable** `WindowBuilder`
 window (`resizable(false)` — a `Dialog` broke `add_managed_window(Window)`)
@@ -165,9 +168,22 @@ window-blue on both sides).
   (`pem` default, or `text`).
 - **TLS**: `build_acceptor` loads `--tls-cert`/`--tls-key` PEM files, or
   generates an ephemeral self-signed cert with `rcgen` in dev mode.
+  `acceptor_from_set(&CertSet)` builds an acceptor from a loaded set for the
+  "Activate Cert for API" toggle.
 - **Server loop**: `run` binds a `TcpListener`, then `serve` accepts
   connections and spawns a tokio task per connection, wrapping each in
-  `TlsAcceptor` before handing it to a hyper auto connection builder.
+  `TlsAcceptor` before handing it to a hyper auto connection builder. Each new
+  connection consults the `SharedActiveCert` slot: `Some` (toggle on) serves
+  that identity, `None` (toggle off) serves the startup identity.
+- **Edit > "Activate Cert for API"**: TUI toggle (`toggle_api_cert` in
+  `app.rs`) that switches the API's serving identity to the **focused**
+  certificate set. It only activates sets that loaded and verified with no
+  failures (`certs::verified_ok`, i.e. Overall PASS / PARTIAL PASS, so a
+  non-anchored chain still counts). Hostname/validity anchoring is not
+  required — clients decide whether to trust the presented identity (`curl -k`).
+  The menu bar's **right indicator** shows `API Cert: ON/OFF` (a static
+  `API_CERT_ON` atomic read by `set_right_indicator`, so the menu is never
+  rebuilt), and the API Server window logs activation/rejection.
 - `api::hex` is a small hex formatter reused elsewhere (e.g. `certs.rs`).
 
 ## Certificate handling (`src/certs.rs`)
@@ -183,6 +199,9 @@ window-blue on both sides).
 - `verify_set(&set)` — builds the chain via signature checks, verifies the
   private key matches the leaf, checks validity windows, and reports an overall
   PASS / PARTIAL PASS / FAIL. Uses `chrono` for day-count math.
+- `verified_ok(&set)` — true when the stored verification report's Overall is
+  PASS or PARTIAL PASS (no failures); gates "Activate Cert for API".
+  `leaf_cn(&set)` extracts the leaf subject CN for the activation log line.
 - Export helpers for the API: `leaf_pem`, `leaf_text`, `intermediates_pem`,
   `intermediates_text`, `key_pem`, `key_text`.
 

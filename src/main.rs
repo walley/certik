@@ -96,6 +96,8 @@ fn main() {
     let log: api::SharedLog = Arc::new(Mutex::new(Vec::new()));
     let sets: api::SharedSets = Arc::new(Mutex::new(Vec::new()));
     let focus: api::SharedFocus = Arc::new(std::sync::atomic::AtomicUsize::new(api::NO_FOCUS));
+    // "Activate Cert for API" (Edit menu): active TLS identity override.
+    let api_cert: api::SharedActiveCert = Arc::new(Mutex::new(None));
 
     // Keep the runtime alive until the TUI exits.
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -116,8 +118,9 @@ fn main() {
         let log2 = log.clone();
         let sets2 = sets.clone();
         let focus2 = focus.clone();
+        let api_cert2 = api_cert.clone();
         rt.spawn(async move {
-            let result = api::run(cfg, log2.clone(), sets2, focus2).await;
+            let result = api::run(cfg, log2.clone(), sets2, focus2, api_cert2).await;
             if let Err(e) = result {
                 let msg = format!("API ERROR: {e}");
                 eprintln!("{msg}");
@@ -128,7 +131,7 @@ fn main() {
         api::log_line(&log, "API subsystem disabled (--no-api)".to_string());
     }
 
-    if let Err(e) = app::run(log, sets, focus, &cli.load_certs, &cli.load_keys) {
+    if let Err(e) = app::run(log, sets, focus, api_cert, &cli.load_certs, &cli.load_keys) {
         eprintln!("certik: {e}");
         std::process::exit(1);
     }

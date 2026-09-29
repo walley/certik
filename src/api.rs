@@ -32,6 +32,11 @@ pub type SharedFocus = Arc<AtomicUsize>;
 
 pub const NO_FOCUS: usize = usize::MAX;
 
+/// TLS identity override set by the TUI's "Activate Cert for API" toggle.
+/// `None` = serve the startup identity (`--tls-cert`/`--tls-key` files, or the
+/// ephemeral dev cert). `Some(acceptor)` = serve that certificate set instead.
+pub type SharedActiveCert = Arc<Mutex<Option<TlsAcceptor>>>;
+
 const MAX_LOG_LINES: usize = 500;
 
 pub fn log_line(log: &SharedLog, line: String) {
@@ -261,6 +266,34 @@ async fn build_acceptor(cfg: &ApiConfig, log: &SharedLog) -> Result<TlsAcceptor,
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
+/// Build a TLS acceptor from a loaded certificate set (Edit > "Activate Cert
+/// for API"). The leaf cert plus any loaded intermediates are presented in
+/// the handshake; no hostname/validity anchoring is required - the client
+/// decides whether to trust the presented identity (e.g. `curl -k`).
+pub fn acceptor_from_set(set: &crate::certs::CertSet) -> Result<TlsAcceptor, String> {
+    let leaf = crate::certs::leaf_pem(set)?;
+    let chain = crate::certs::intermediates_pem(set).unwrap_or_default();
+
+    let mut chain_pem = leaf;
+    if !chain.is_empty() {
+        chain_pem.push('\n');
+        chain_pem.push_str(&chain);
+    }
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut chain_pem.as_bytes())
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("cannot parse certificate chain: {e}"))?;
+    let key = rustls_pemfile::private_key(&mut crate::certs::key_pem(set)?.as_bytes())
+        .map_err(|e| format!("cannot parse private key: {e}"))?
+        .ok_or("no private key in material")?;
+
+    let config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| format!("TLS config: {e}"))?;
+
+    Ok(TlsAcceptor::from(Arc::new(config)))
+}
+
 pub(crate) fn hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
@@ -274,7 +307,13 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 // Server loop
 // ---------------------------------------------------------------------------
 
-pub async fn run(cfg: ApiConfig, log: SharedLog, sets: SharedSets, focus: SharedFocus) -> std::io::Result<()> {
+pub async fn run(
+    cfg: ApiConfig,
+    log: SharedLog,
+    sets: SharedSets,
+    focus: SharedFocus,
+    active: SharedActiveCert,
+) -> std::io::Result<()> {
     let acceptor = match build_acceptor(&cfg, &log).await {
         Ok(a) => a,
         Err(e) => {
@@ -291,19 +330,28 @@ pub async fn run(cfg: ApiConfig, log: SharedLog, sets: SharedSets, focus: Shared
     log_line(&log, "GET /intermediate -> intermediate certs (pem)".into());
     log_line(&log, "GET /key -> private key (pem)".into());
     log_line(&log, "serves the currently focused certificate set".into());
+    log_line(&log, "Edit > Activate Cert for API switches the TLS identity".into());
 
-    serve(listener, acceptor, log, sets, focus).await
+    serve(listener, acceptor, active, log, sets, focus).await
 }
 
 async fn serve(
     listener: TcpListener,
-    acceptor: TlsAcceptor,
+    baseline: TlsAcceptor,
+    active: SharedActiveCert,
     log: SharedLog,
     sets: SharedSets,
     focus: SharedFocus,
 ) -> std::io::Result<()> {
     loop {
         let (tcp, peer) = listener.accept().await?;
+        // New connections use the TUI-activated certificate when set, else the
+        // startup identity. Existing connections keep their negotiated identity.
+        let acceptor = active
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .unwrap_or_else(|| baseline.clone());
         let acceptor = acceptor.clone();
         let log = log.clone();
         let sets = sets.clone();
@@ -389,7 +437,14 @@ mod tests {
         let acceptor = build_acceptor(&cfg, &log).await.expect("acceptor");
         let listener = TcpListener::bind(cfg.bind).await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(serve(listener, acceptor, log, sets, focus));
+        tokio::spawn(serve(
+            listener,
+            acceptor,
+            Arc::new(Mutex::new(None)),
+            log,
+            sets,
+            focus,
+        ));
 
         // Client trusts the server's certificate directly.
         let mut roots = rustls::RootCertStore::empty();
@@ -419,6 +474,60 @@ mod tests {
 
         std::fs::remove_file(&cert_path).ok();
         std::fs::remove_file(&key_path).ok();
+    }
+
+    /// End-to-end: the "Activate Cert for API" override replaces the server's
+    /// TLS identity - a client that trusts only the activated set's cert can
+    /// talk to a server started with a different baseline identity.
+    #[tokio::test]
+    async fn active_cert_overrides_baseline_tls_identity() {
+        let (base_pem, base_key_pem) = self_signed_pem_pair().unwrap();
+        let (set_pem, set_key_pem) = self_signed_pem_pair().unwrap();
+
+        fn make_set(pem: &str, key_pem: &str, id: usize) -> crate::certs::CertSet {
+            let cert = openssl::x509::X509::from_pem(pem.as_bytes()).unwrap();
+            let key = openssl::pkey::PKey::private_key_from_pem(key_pem.as_bytes()).unwrap();
+            let mut set = crate::certs::CertSet::new(id);
+            set.load_leaf(std::path::Path::new("c.pem"), cert);
+            set.load_key(std::path::Path::new("k.pem"), key);
+            set
+        }
+
+        let baseline = acceptor_from_set(&make_set(&base_pem, &base_key_pem, 1)).unwrap();
+        let active: SharedActiveCert =
+            Arc::new(Mutex::new(Some(acceptor_from_set(&make_set(&set_pem, &set_key_pem, 2)).unwrap())));
+
+        let log: SharedLog = Arc::new(Mutex::new(Vec::new()));
+        let sets: SharedSets = Arc::new(Mutex::new(Vec::new()));
+        let focus: SharedFocus = Arc::new(AtomicUsize::new(NO_FOCUS));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(serve(listener, baseline, active, log, sets, focus));
+
+        // Client trusts ONLY the activated set's certificate.
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in rustls_pemfile::certs(&mut set_pem.as_bytes()) {
+            roots.add(cert.unwrap()).unwrap();
+        }
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut tls = connector
+            .connect(rustls::pki_types::ServerName::try_from("localhost".to_string()).unwrap(), tcp)
+            .await
+            .expect("handshake using the activated cert");
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        tls.write_all(b"GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = String::new();
+        tls.read_to_string(&mut response).await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+        assert!(response.ends_with("pong"), "got: {response}");
     }
 
     #[test]
@@ -502,7 +611,14 @@ mod tests {
         let acceptor = build_acceptor(&cfg, &log).await.expect("acceptor");
         let listener = TcpListener::bind(cfg.bind).await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(serve(listener, acceptor, log, sets, focus));
+        tokio::spawn(serve(
+            listener,
+            acceptor,
+            Arc::new(Mutex::new(None)),
+            log,
+            sets,
+            focus,
+        ));
 
         // Build TLS client.
         let mut roots = rustls::RootCertStore::empty();
