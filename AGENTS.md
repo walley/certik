@@ -44,11 +44,23 @@ runtime is kept alive until the TUI exits (`rt` is dropped after `app::run`).
 The app runs a **custom main loop** (not the framework's `run`), replicating a
 few framework behaviors:
 
-- `main_loop` iterates `ui.app.running`, fetches events with
-  `ui.app.get_event()`, dispatches via `ui.app.handle_event()`, then manually
-  calls `ui.app.desktop.remove_closed_windows()` each iteration (the framework
-  normally does this inside its own loop).
-- After each event it calls `sync_scrollbars` and `sync_focus`.
+- `main_loop` polls `ui.app.terminal.poll_event(20ms)` directly (it does *not*
+  use `Application::get_event`, which unconditionally redraws the whole screen
+  every call and is meant for modal loops — always redrawing burned ~20% CPU
+  while idle). Events are dispatched via `ui.app.handle_event()`, commands
+  are matched after it, and closed windows are swept with
+  `ui.app.desktop.remove_closed_windows()` (the framework does this inside its
+  own loop).
+- After each event it calls `sync_scrollbars` and `sync_focus`, draws, and
+  flushes. On an idle timeout it runs `app.idle()` (resize self-heal, status
+  line, auto-repeat), then draws **only** when something actually needs a new
+  frame: a game window is open (Tetris/Snake animate by ticking inside
+  `draw()`), the "API Server" log grew (checked against a `last_log_len`
+  baseline, and only while the server window is open), or the terminal was
+  resized. With nothing open the loop ids at ~0% CPU.
+- `live_windows(ui)` reports which windows want periodic redraws by scanning
+  desktop children and classifying them via `window_key` (`Aux` = game,
+  `Server` = API log).
 
 ### Window management & the `WinKeyMarker`
 

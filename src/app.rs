@@ -238,41 +238,105 @@ pub fn run(log: SharedLog, sets: api::SharedSets, focus: api::SharedFocus, load_
 }
 
 fn main_loop(ui: &mut Ui) {
+    use std::time::Duration;
+
+    // Redraw policy: a full screen redraw is the expensive part (many
+    // terminal writes), so we only do it when a handled event changed
+    // something, or on idle when a game is animating or the API log grew.
+    // `Application::get_event` always redraws (it is meant for modal loops),
+    // which is what burned CPU while idle.
+    let mut last_log_len: usize = ui.log.lock().map(|l| l.len()).unwrap_or(0);
+
+    // Initial frame.
+    ui.app.draw();
+    let _ = ui.app.terminal.flush();
+
     while ui.app.running {
-        if let Some(mut event) = ui.app.get_event() {
+        // Blocks (thread sleep) until an event arrives or the 20ms timeout.
+        match ui.app.terminal.poll_event(Duration::from_millis(20)) {
+            Ok(Some(mut event)) => {
+                // Route mouse events to border scrollbars before framework handles them
+                route_scrollbar_mouse(ui, &mut event);
 
-            // Route mouse events to border scrollbars before framework handles them
-            route_scrollbar_mouse(ui, &mut event);
+                ui.app.handle_event(&mut event);
 
-            ui.app.handle_event(&mut event);
+                if event.what == EventType::Command {
+                    match event.command {
+                        CM_NEW_SET => new_certificate_set(ui),
+                        CM_LOAD_CERT => load_component(ui, LoadSlot::Leaf),
+                        CM_LOAD_INT => load_component(ui, LoadSlot::Intermediates),
+                        CM_LOAD_KEY => load_component(ui, LoadSlot::Key),
+                        CM_INSPECT => inspect_file(ui),
+                        CM_WIN_ZOOM => window_menu_action(ui, WinAction::Zoom),
+                        CM_WIN_MINIMIZE => window_menu_action(ui, WinAction::Minimize),
+                        CM_WIN_RESTORE => window_menu_action(ui, WinAction::Restore),
+                        CM_SHORTCUTS => show_shortcuts(ui),
+                        CM_ABOUT => show_about(ui),
+                        CM_TETRIS => show_tetris(ui),
+                        CM_SNAKE => show_snake(ui),
+                        _ => {}
+                    }
+                }
 
-            if event.what == EventType::Command {
-                match event.command {
-                    CM_NEW_SET => new_certificate_set(ui),
-                    CM_LOAD_CERT => load_component(ui, LoadSlot::Leaf),
-                    CM_LOAD_INT => load_component(ui, LoadSlot::Intermediates),
-                    CM_LOAD_KEY => load_component(ui, LoadSlot::Key),
-                    CM_INSPECT => inspect_file(ui),
-                    CM_WIN_ZOOM => window_menu_action(ui, WinAction::Zoom),
-                    CM_WIN_MINIMIZE => window_menu_action(ui, WinAction::Minimize),
-                    CM_WIN_RESTORE => window_menu_action(ui, WinAction::Restore),
-                    CM_SHORTCUTS => show_shortcuts(ui),
-                    CM_ABOUT => show_about(ui),
-                    CM_TETRIS => show_tetris(ui),
-                    CM_SNAKE => show_snake(ui),
-                    _ => {}
+                // The framework's `run()` loop removes SF_CLOSED windows each
+                // iteration; certik runs its own loop, so replicate that sweep
+                // here so the frame close button actually closes windows.
+                ui.app.desktop.remove_closed_windows();
+
+                sync_scrollbars(ui);
+                sync_focus(ui);
+
+                // Draw the frame produced by the handled event.
+                ui.app.draw();
+                let _ = ui.app.terminal.flush();
+            }
+            Ok(None) => {
+                // Timeout with no input: cheap idle upkeep, then redraw only
+                // if a live window (game animation, API log growth) or a
+                // resize (relaid out by `idle()`) needs a new frame.
+                let size_before = ui.app.terminal.size();
+                ui.app.idle();
+
+                sync_scrollbars(ui);
+                sync_focus(ui);
+
+                let resize_happened = ui.app.terminal.size() != size_before;
+                let (has_game, has_server) = live_windows(ui);
+                let log_len = ui.log.lock().map(|l| l.len()).unwrap_or(last_log_len);
+                let log_changed = has_server && log_len != last_log_len;
+                last_log_len = log_len;
+
+                if has_game || log_changed || resize_happened {
+                    ui.app.draw();
+                    let _ = ui.app.terminal.flush();
                 }
             }
-
-            // The framework's `run()` loop removes SF_CLOSED windows each
-            // iteration; certik runs its own loop, so replicate that sweep
-            // here so the frame close button actually closes windows.
-            ui.app.desktop.remove_closed_windows();
+            Err(_) => {
+                // Terminal backend gone (e.g. the session closed): stop, like
+                // the framework's `poll_event_or_quit` would.
+                ui.app.running = false;
+            }
         }
-
-        sync_scrollbars(ui);
-        sync_focus(ui);
     }
+}
+
+/// Which open windows need periodic redraws while idle: the games (their
+/// animation advances inside `draw()`) and the "API Server" window (its log
+/// can grow from the API task at any time, not only from user input).
+fn live_windows(ui: &Ui) -> (bool, bool) {
+    let (mut has_game, mut has_server) = (false, false);
+    let d = &ui.app.desktop;
+    for i in 0..d.child_count() {
+        let Some(win) = d.child_at(i).as_any().downcast_ref::<Window>() else {
+            continue;
+        };
+        match window_key(win) {
+            Some(WinKey::Aux(_)) => has_game = true,
+            Some(WinKey::Server) => has_server = true,
+            _ => {}
+        }
+    }
+    (has_game, has_server)
 }
 
 fn sync_focus(ui: &mut Ui) {
