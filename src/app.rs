@@ -1,4 +1,4 @@
-//! TUI front-end built on the turbo-vision framework (v1.3.1).
+//! TUI front-end built on the turbo-vision framework (v4.0.3).
 //!
 //! Layout:
 //!   - Top menu bar: File / Edit / Help
@@ -1130,7 +1130,7 @@ fn run_file_dialog(app: &mut Application, title: &str, start_dir: Option<&Path>)
         &format!(
             "\x03Certik\n\x03 \nVersion {}\nHTTP(S) certificate manager.\n \x03TUI: turbo-vision ({})",
             env!("CARGO_PKG_VERSION"),
-            "3.0.1"
+            "4.0.3"
         ),
         MsgBox::INFORMATION | MsgBox::OK_BUTTON,
     );

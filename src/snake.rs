@@ -419,9 +419,17 @@ mod tests {
         let mut view = SnakeView::new(Rect::new(0, 0, 38, 24));
         view.interval = 1;
         view.dir = Dir::Up;
-        for _ in 0..12 {
+        // Park the food off the upward path. Eating it would raise the score and
+        // reset `interval` to BASE_INTERVAL, stalling the snake before the wall.
+        view.food = (0, SNAKE_HEIGHT - 1);
+        // Drive one move per tick and keep the speed pinned, so the run does not
+        // depend on how many ticks `tick` decides to swallow between moves.
+        let mut moves = 0;
+        while !view.game_over && moves < SNAKE_HEIGHT as u32 {
+            view.interval = 1;
             view.tick();
+            moves += 1;
         }
-        assert!(view.game_over);
+        assert!(view.game_over, "snake never reached the top wall");
     }
 }
